@@ -2,14 +2,12 @@
 kotlin = "2.3.21"
 koog = "1.0.0-preview7"
 koogExt = "1.0.0-beta-preview7"
-casciian = "1.6.0"
 coroutines = "1.10.2"
 serialization = "1.9.0"
 
 [libraries]
 koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
 koog-agents-ext = { module = "ai.koog:agents-ext", version.ref = "koogExt" }
-casciian = { module = "io.github.crramirez:casciian", version.ref = "casciian" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 

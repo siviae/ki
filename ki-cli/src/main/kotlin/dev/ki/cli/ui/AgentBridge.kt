@@ -4,10 +4,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
- * Bridges the coroutine/async agent runtime to casciian's synchronous UI thread.
+ * Bridges the coroutine/async agent runtime to the single-threaded ki-tui UI.
  *
  * The agent runs on a background coroutine; when it produces a result the callback
- * is marshaled back onto the UI thread via [uiPost] (in production, `TApplication::invokeLater`).
+ * is marshaled back onto the UI thread via [uiPost] (in production, `Tui::post`).
  * Widgets are only ever touched inside that posted runnable — never off-thread.
  *
  * [run] is injected (rather than a concrete agent) so the bridge is unit-testable

@@ -1,64 +1,84 @@
 package dev.ki.cli.ui
 
-import casciian.TAction
-import casciian.TApplication
-import casciian.TField
-import casciian.TText
-import casciian.TWindow
+import dev.ki.tui.Ansi
+import dev.ki.tui.Component
+import dev.ki.tui.Container
+import dev.ki.tui.Editor
+import dev.ki.tui.Key
+import dev.ki.tui.Keys
+import dev.ki.tui.Spacer
+import dev.ki.tui.Text
+import dev.ki.tui.Tui
+import dev.ki.tui.Width
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 
 /**
- * The pi-style TUI on casciian: a single maximized window with a scrolling
- * transcript (top) and a single-line input (bottom), plus a status-bar footer.
- * Live token-by-token streaming and the colored thinking-depth editor border are
- * later milestones; M1 renders the final assistant text and tool activity.
+ * The pi-style coding-agent UI, now on our own [Tui]: an inline, scrollback-
+ * friendly transcript (grows downward) with a fixed prompt editor and status line
+ * pinned at the bottom. The differential renderer only repaints the changed rows,
+ * so streaming updates and edits don't flicker. Casciian is gone.
  */
 class KiScreen(
-    private val app: TApplication,
+    private val tui: Tui,
     runner: suspend (String) -> String,
 ) {
-    private val window = TWindow(app, "ki — coding agent", 0, 0, 100, 30)
-    private val transcript: TText
-    private val input: TField
+    private val transcript = Container()
+    private val editor = Editor()
+    private val status = StatusLine("ki • ready — Enter to send, Ctrl-Q to quit")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val bridge = AgentBridge(scope, app::invokeLater, runner)
+    private val bridge = AgentBridge(scope, tui::post, runner)
     private var busy = false
 
     init {
-        window.maximize()
-        val w = window.width - 2
-        val h = window.height - 2
-        transcript = TText(window, "", 1, 1, w, h - 3)
-        input = TField(
-            window, 1, h - 1, w, false, "",
-            object : TAction() {
-                override fun DO() = onSubmit()
-            },
-        )
-        window.newStatusBar("ki • ready — Enter to send, Ctrl-Q to quit")
+        tui.addChild(transcript)
+        tui.addChild(Spacer(1))
+        tui.addChild(editor)
+        tui.addChild(status)
+        tui.setFocus(editor)
+
+        editor.onChange = { tui.requestRender() }
+        editor.onSubmit = { onSubmit(it) }
+
+        // Raw mode swallows SIGINT; intercept Ctrl-C / Ctrl-Q to quit cleanly.
+        tui.addInputListener { data ->
+            if (Keys.matchesKey(data, Key.CTRL_C) || Keys.matchesKey(data, Key.CTRL_Q)) {
+                tui.stop(); true
+            } else {
+                false
+            }
+        }
+
         appendLine("Welcome to ki. Type a prompt and press Enter.")
     }
 
-    private fun onSubmit() {
+    private fun onSubmit(text: String) {
         if (busy) return
-        val text = input.text.trim()
-        if (text.isEmpty()) return
-        input.text = ""
+        editor.clear()
         appendLine("› $text")
         busy = true
-        window.statusBar?.setText("ki • thinking…")
+        status.set("ki • thinking…")
+        tui.requestRender()
         bridge.submit(text) { result ->
             appendLine(result)
             busy = false
-            window.statusBar?.setText("ki • ready")
+            status.set("ki • ready")
+            tui.requestRender()
         }
     }
 
-    /** Append a line to the transcript. Must run on the UI thread. */
+    /** Append a transcript entry (may contain newlines). Runs on the UI thread. */
     fun appendLine(s: String) {
-        s.split("\n").forEach { transcript.addLine(it) }
-        transcript.reflowData()
+        transcript.add(Text(s))
+        tui.requestRender()
     }
+}
+
+/** A single full-width inverted status bar line. */
+private class StatusLine(text: String) : Component {
+    private var text = text
+    fun set(value: String) { text = value }
+    override fun render(width: Int): List<String> =
+        listOf(Ansi.invert(Width.padTo(" $text", width)))
 }

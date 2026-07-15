@@ -9,9 +9,9 @@ kotlin {
 
 dependencies {
     implementation(project(":ki-agent"))
+    implementation(project(":ki-tui"))
     implementation(libs.koog.agents)
     implementation(libs.koog.agents.ext)
-    implementation(libs.casciian)
     implementation(libs.kotlinx.coroutines.core)
 
     testImplementation(kotlin("test"))

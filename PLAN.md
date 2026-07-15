@@ -1,14 +1,14 @@
 # ki — Build Plan
 
 JVM port of [pi](https://github.com/earendil-works/pi), an interactive coding agent,
-reimplemented in Kotlin on [koog](https://github.com/JetBrains/koog). Three layered
-modules:
+reimplemented in Kotlin on [koog](https://github.com/JetBrains/koog). Layered modules:
 
 - **ki-ai** — unified LLM API over providers (LiteLLM first), model catalog.
 - **ki-agent** — tool-calling agent runtime; tools authored as Kotlin scripts,
   compiled on startup.
-- **ki-cli** — interactive TUI coding agent built on
-  [casciian](https://github.com/crramirez/casciian), driving ki-agent.
+- **ki-tui** — native terminal UI framework (differential rendering, no external
+  TUI dependency), a Kotlin port of pi's [`packages/tui`](https://github.com/earendil-works/pi/tree/main/packages/tui).
+- **ki-cli** — interactive TUI coding agent built on **ki-tui**, driving ki-agent.
 
 This document is the roadmap. **M1 is complete**; M2+ are the plan for continuing
 the build locally. Each milestone lists a goal, the concrete deliverables, the
@@ -18,9 +18,10 @@ modules touched, and acceptance criteria you can check against.
 
 ## Conventions
 
-- **Package root:** `dev.ki.*` (`dev.ki.ai`, `dev.ki.agent`, `dev.ki.cli`).
+- **Package root:** `dev.ki.*` (`dev.ki.ai`, `dev.ki.agent`, `dev.ki.tui`, `dev.ki.cli`).
 - **Build:** Gradle (Kotlin DSL), version catalog in `gradle/libs.versions.toml`.
-  Built and tested with Gradle 8.14.3.
+  Built and tested with Gradle 8.14.3. **Toolchain: JDK 21** (Gradle 8.14.3 does
+  not support running on JDK 25 — use JDK 21 for the wrapper and all builds).
 - **Tests:** JUnit. Live-wire integration tests self-skip unless `KI_IT=1` is set
   and a LiteLLM endpoint is reachable (see each test's guard).
 - **Tool scripts:** `*.ki.kts`, compiled on startup via `ScriptToolLoader`
@@ -33,13 +34,14 @@ modules touched, and acceptance criteria you can check against.
 | # | Milestone | Status |
 |---|-----------|--------|
 | M1 | End-to-end vertical slice | ✅ Done (commit `6b8a812`) |
-| M2 | Core file & shell toolset | ▢ Planned |
-| M3 | Config, model catalog & sessions | ▢ Planned |
-| M4 | Tool permissions & approval | ▢ Planned |
-| M5 | Context & token management | ▢ Planned |
-| M6 | TUI: slash commands, cancel, cost | ▢ Planned |
-| M7 | Robustness: retries, errors, logging | ▢ Planned |
-| M8 | Packaging & distribution | ▢ Planned |
+| M2 | Native TUI framework (ki-tui), drop casciian | ▢ Planned |
+| M3 | Core file & shell toolset | ▢ Planned |
+| M4 | Config, model catalog & sessions | ▢ Planned |
+| M5 | Tool permissions & approval | ▢ Planned |
+| M6 | Context & token management | ▢ Planned |
+| M7 | TUI: slash commands, cancel, cost | ▢ Planned |
+| M8 | Robustness: retries, errors, logging | ▢ Planned |
+| M9 | Packaging & distribution | ▢ Planned |
 
 ---
 
@@ -61,20 +63,101 @@ back — through one real tool.
   koog `ReadFileTool`. Bundled `grep.ki.kts` script tool.
 
 **Verified:** `gradle build` green; unit tests for the script loader (compile +
-cache reuse) and the UI bridge; integration tests (self-skip w/o `KI_IT=1`)
+cache reuse) and the UI bridge; integration tests (self-skip w/o `KI_IT`)
 covering streaming, an agent reply, and the full tool-calling loop via a
 script-defined tool.
 
 **Known gaps carried forward**
-- No committed Gradle wrapper (`gradlew`) — generation was blocked in the build
-  environment. **First local step:** run `gradle wrapper --gradle-version 8.14.3`
-  and commit `gradlew`, `gradlew.bat`, `gradle/wrapper/`.
-- Single builtin tool (read file) + one script tool (grep). Expanded in M2.
-- No config file, no persistence, no permissions. Addressed M3/M4.
+- ~~No committed Gradle wrapper~~ — **resolved locally.** Wrapper generated with
+  `gradle wrapper --gradle-version 8.14.3` (under JDK 21); still needs committing
+  (see M9). `./gradlew build` is green.
+- casciian TUI is being replaced by our own **ki-tui** — see M2.
+- Single builtin tool (read file) + one script tool (grep). Expanded in M3.
+- No config file, no persistence, no permissions. Addressed M4/M5.
 
 ---
 
-## M2 — Core file & shell toolset
+## M2 — Native TUI framework (ki-tui), drop casciian
+
+**Goal:** replace the casciian dependency with our own terminal UI framework — a
+Kotlin port of pi's `packages/tui`. A differential-rendering, flicker-free TUI we
+fully control, then reimplement ki-cli's `KiScreen` on it and remove casciian.
+
+**Why:** casciian is a heavyweight full-screen widget toolkit that doesn't match
+pi's model (inline, scrollback-friendly, differential redraw). Owning the layer
+lets M7 (streaming, cancel, cost) and the transcript UX match pi exactly.
+
+**Modules:** new `ki-tui` module (package `dev.ki.tui`); `ki-cli` (migrate
+`KiScreen`/`AgentBridge` onto ki-tui); build (`settings.gradle.kts`,
+`libs.versions.toml`, `ki-cli/build.gradle.kts`).
+
+### Decision: terminal driver (record it, don't hand-wave)
+
+The JVM has no built-in raw-mode API. Default to the **`stty` subprocess** path
+(`stty raw -echo` against `/dev/tty` via `ProcessBuilder`, restore on exit) — it
+adds **zero new dependencies** and is already proven in this stack (casciian
+itself shelled to `stty` in the M1 run log). Read raw bytes from `System.in`,
+write ANSI to `System.out`. Keep it behind a `Terminal` interface so JLine or a
+JNA/JNI raw-mode backend can be swapped in later without touching components.
+Explicitly **not** adopting JLine now — trading casciian for JLine would not be
+"our own TUI."
+
+### Deliverables
+
+- **`Terminal` interface + `ProcessTerminal`** (port of `terminal.ts`): raw mode
+  on/off, `columns`/`rows` (+ SIGWINCH-equivalent resize via a size poll or JNI
+  `ioctl`), `write`, cursor `moveBy`/`hide`/`show`, `clearLine`/`clearFromCursor`/
+  `clearScreen`, bracketed-paste enable (`\x1b[?2004h`), `setTitle`. Restore
+  terminal state on stop and on JVM shutdown hook.
+- **Differential renderer — the spine** (`TUI` class, port of `tui.ts`): component
+  tree → `List<String>` lines per width; the three-strategy diff (full redraw /
+  append-only / in-place line update), all writes wrapped in **synchronized output
+  CSI 2026** (`\x1b[?2026h` … `\x1b[?2026l`) for atomic, flicker-free frames.
+  Scrollback-aware viewport tracking; coalesced `requestRender()` on a frame timer.
+- **`Component` interface:** `render(width: Int): List<String>`, optional
+  `handleInput(data: String)`, `invalidate()`. Contract: each returned line's
+  visible width must not exceed `width`; TUI resets SGR + OSC-8 per line.
+- **Core components** (port `components/`): `Container`, `Text`, `TruncatedText`,
+  `Spacer`, `Box`, `Input` (single-line), `Editor` (multi-line submit), `Loader`
+  (spinner) — enough to rebuild the transcript / input / status layout.
+- **Input pipeline:** `StdinBuffer` (split batched input into single sequences,
+  detect bracketed paste), `keys` (`parseKey`/`matchesKey`, modifier decoding),
+  configurable `Keybindings`.
+- **Text/width utilities** (port `utils.ts`): ANSI-aware `visibleWidth` backed by
+  a **wcwidth** table (CJK / emoji / combining marks), grapheme segmentation via
+  `java.text.BreakIterator` (ICU4J only if BreakIterator proves insufficient),
+  `truncateToWidth`, `wrapTextWithAnsi`, `sliceByColumn`.
+- **Editor essentials:** cursor + word navigation, `UndoStack`, emacs-style
+  `KillRing` — the minimum for a usable multi-line prompt editor.
+- **Migrate ki-cli:** reimplement `KiScreen` (transcript / input / status panes)
+  and `AgentBridge` on ki-tui; delete the casciian usage. **Remove casciian from
+  `libs.versions.toml` and `ki-cli/build.gradle.kts`.**
+
+### Deferred / backlog (explicitly out of scope for M2 to keep it shippable)
+
+- Inline images (Kitty / iTerm2 graphics protocols), `Image` component.
+- Full Kitty keyboard-protocol negotiation + key-release/repeat events
+  (fall back to standard escape-sequence parsing).
+- Autocomplete + fuzzy matching (file paths / slash commands) — overlaps M7.
+- `Markdown`, `SelectList`, `SettingsList` components.
+- Overlays / modals, IME hardware-cursor positioning (`CURSOR_MARKER`).
+- Native modifier bindings (pi's `.node` C shims) — Kotlin has no equivalent need.
+
+### Acceptance
+
+- **casciian is gone:** `grep -ri casciian .` returns only history/plan; it is
+  absent from `libs.versions.toml` and `ki-cli/build.gradle.kts`. `./gradlew build`
+  green.
+- **ki-cli boots on ki-tui:** launcher starts, renders transcript / input / status
+  panes, accepts a typed prompt and Ctrl-Q to quit — verified the same way the M1
+  casciian boot was (run the launcher under a pty, confirm the rendered UI).
+- **Unit tests:** width/`truncateToWidth`/`wrapTextWithAnsi` (incl. CJK/emoji), the
+  diff renderer against golden line buffers (full vs. append vs. in-place update),
+  key parsing / `matchesKey`, and the editor ops (insert / word-move / undo / kill).
+
+---
+
+## M3 — Core file & shell toolset
 
 **Goal:** give the agent the tools a coding agent actually needs to edit a repo.
 
@@ -99,7 +182,7 @@ script-defined tool.
 
 ---
 
-## M3 — Config, model catalog & sessions
+## M4 — Config, model catalog & sessions
 
 **Goal:** real configuration and persistence so runs are reproducible and resumable.
 
@@ -124,7 +207,7 @@ script-defined tool.
 
 ---
 
-## M4 — Tool permissions & approval
+## M5 — Tool permissions & approval
 
 **Goal:** don't let the agent mutate the machine without oversight — mirror pi /
 Claude Code permission modes.
@@ -148,7 +231,7 @@ Claude Code permission modes.
 
 ---
 
-## M5 — Context & token management
+## M6 — Context & token management
 
 **Goal:** long sessions don't blow the context window.
 
@@ -169,15 +252,16 @@ Claude Code permission modes.
 
 ---
 
-## M6 — TUI polish: slash commands, cancel, cost
+## M7 — TUI polish: slash commands, cancel, cost
 
 **Goal:** make the CLI pleasant and interruptible.
 
-**Modules:** ki-cli.
+**Modules:** ki-cli, ki-tui.
 
 **Deliverables**
 - Slash commands: `/help`, `/model`, `/clear`, `/tools`, `/config`, `/resume`,
-  `/quit` — dispatched before the prompt reaches the agent.
+  `/quit` — dispatched before the prompt reaches the agent. (Autocomplete + fuzzy
+  matching for slash commands / file paths, deferred from M2, lands here.)
 - Cancellation: interrupt an in-flight agent turn (cancel the coroutine / koog
   run) from the UI without corrupting session state.
 - Live streaming render into the transcript pane (token-by-token).
@@ -191,7 +275,7 @@ Claude Code permission modes.
 
 ---
 
-## M7 — Robustness: retries, errors, logging
+## M8 — Robustness: retries, errors, logging
 
 **Goal:** survive flaky networks and bad inputs without dying.
 
@@ -213,18 +297,18 @@ Claude Code permission modes.
 
 ---
 
-## M8 — Packaging & distribution
+## M9 — Packaging & distribution
 
 **Goal:** a runnable, distributable `ki`.
 
 **Modules:** build, ki-cli.
 
 **Deliverables**
-- Commit the Gradle wrapper (see M1 gap).
+- Commit the Gradle wrapper (generated locally under JDK 21; see M1 note).
 - `application` plugin on ki-cli → `installDist` / runnable scripts; a `ki`
   launcher.
 - Optional: shadow/fat jar; GraalVM native-image experiment for fast startup.
-- CI (GitHub Actions): `gradle build` + tests on push; cache Gradle.
+- CI (GitHub Actions): `gradle build` + tests on push (JDK 21); cache Gradle.
 - README: install, configure (LiteLLM URL/key), run, author a script tool.
 
 **Acceptance**
@@ -236,6 +320,8 @@ Claude Code permission modes.
 ## Cross-cutting backlog (pick up any time)
 
 - More bundled script tools (`*.ki.kts`): web fetch, apply-patch, run-tests.
+- ki-tui components deferred from M2: inline images (Kitty/iTerm2), `Markdown`,
+  `SelectList`, overlays/modals, full Kitty keyboard protocol, IME cursor.
 - Multi-provider in ki-ai beyond LiteLLM (direct OpenAI/Anthropic) via the same
   `MultiLLMPromptExecutor` seam.
 - Tool-call parallelism where safe.
@@ -247,21 +333,24 @@ Claude Code permission modes.
 ## Getting started locally
 
 ```bash
-# 1. Generate & commit the wrapper (one-time; blocked in the build env that made M1)
-gradle wrapper --gradle-version 8.14.3
+# 1. Wrapper is generated (JDK 21). If starting fresh:
+#    gradle wrapper --gradle-version 8.14.3   # run under JDK 21
+export JAVA_HOME="$HOME/.sdkman/candidates/java/21.0.3-jbr"   # Gradle 8.14.3 needs JDK <= 24
 
 # 2. Build & test
 ./gradlew build
 
 # 3. Run live integration tests against a LiteLLM endpoint
 export KI_IT=1
-export KI_BASE_URL=http://localhost:4000   # your LiteLLM proxy
-export KI_API_KEY=sk-...                    # if your proxy requires one
+export LITELLM_BASE_URL=http://localhost:4000   # your LiteLLM proxy
+export LITELLM_API_KEY=sk-...                    # if your proxy requires one
 ./gradlew test
 
-# 4. Launch the TUI (once M8 wiring lands; until then use ki-cli's Main)
+# 4. Launch the TUI
 ./gradlew :ki-cli:run
+# ...or via the installed launcher:
+./gradlew :ki-cli:installDist && ki-cli/build/install/ki-cli/bin/ki-cli
 ```
 
-Start at **M2**. Each milestone is independently shippable; keep the
+Start at **M2** (native TUI). Each milestone is independently shippable; keep the
 integration-test-behind-`KI_IT` discipline so `gradle build` stays green offline.

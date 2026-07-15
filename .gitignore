@@ -3,5 +3,5 @@ build/
 !gradle/wrapper/gradle-wrapper.jar
 *.log
 .idea/
-.ki/cache/
+.ki/
 local.properties

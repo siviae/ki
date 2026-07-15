@@ -1,11 +1,12 @@
 package dev.ki.cli
 
 import ai.koog.agents.core.tools.ToolBase
-import casciian.TApplication
 import dev.ki.agent.KiAgent
 import dev.ki.agent.tools.ScriptToolLoader
 import dev.ki.ai.KiLlm
 import dev.ki.cli.ui.KiScreen
+import dev.ki.tui.ProcessTerminal
+import dev.ki.tui.Tui
 import java.io.File
 
 private val SYSTEM_PROMPT = """
@@ -28,9 +29,10 @@ fun main() {
     val tools: List<ToolBase<*, *>> = BuiltinTools.all() + scriptTools
     val agent = KiAgent(llm, SYSTEM_PROMPT, tools)
 
-    val app = TApplication(TApplication.BackendType.XTERM)
-    KiScreen(app, agent::run)
-    app.run()
+    val tui = Tui(ProcessTerminal())
+    KiScreen(tui, agent::run)
+    tui.start()
+    tui.awaitStop()
 }
 
 /** Copy bundled scripts from resources into [toolsDir] if not already present. */
