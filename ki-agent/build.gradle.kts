@@ -11,6 +11,7 @@ dependencies {
     api(project(":ki-ai"))
     api(libs.koog.agents)
     implementation(libs.koog.agents.ext)
+    implementation(libs.nuprocess)
 
     // Kotlin scripting host: compile .kts tool scripts on startup.
     implementation(libs.kotlin.scripting.common)

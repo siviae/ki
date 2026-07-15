@@ -4,12 +4,16 @@ koog = "1.0.0-preview7"
 koogExt = "1.0.0-beta-preview7"
 coroutines = "1.10.2"
 serialization = "1.9.0"
+nuprocess = "3.0.0" # 4.0.0 targets Java 25 bytecode; 3.0.0 (Java 7) works on JDK 21
 
 [libraries]
 koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
 koog-agents-ext = { module = "ai.koog:agents-ext", version.ref = "koogExt" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+
+# Subprocess management (bash tool) — async, no reactor-thread-per-process
+nuprocess = { module = "com.zaxxer:nuprocess", version.ref = "nuprocess" }
 
 # Kotlin scripting host (compile .kts tool scripts on startup)
 kotlin-scripting-common = { module = "org.jetbrains.kotlin:kotlin-scripting-common", version.ref = "kotlin" }

@@ -3,6 +3,7 @@ package dev.ki.cli
 import ai.koog.agents.core.tools.ToolBase
 import dev.ki.agent.KiAgent
 import dev.ki.agent.tools.ScriptToolLoader
+import dev.ki.agent.tools.builtin.BuiltinTools
 import dev.ki.ai.KiLlm
 import dev.ki.cli.ui.KiScreen
 import dev.ki.tui.ProcessTerminal
@@ -10,8 +11,9 @@ import dev.ki.tui.Tui
 import java.io.File
 
 private val SYSTEM_PROMPT = """
-    You are ki, a terse coding agent. Use the provided tools to read files and
-    search the codebase. Keep answers minimal and direct.
+    You are ki, a terse coding agent. Use the provided tools to work in the repo:
+    read and write files, edit with exact text replacement, list directories, grep,
+    and run bash commands. Keep answers minimal and direct.
 """.trimIndent()
 
 /** Bundled default tool scripts, extracted to .ki/tools on first run. */

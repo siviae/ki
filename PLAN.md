@@ -10,9 +10,9 @@ reimplemented in Kotlin on [koog](https://github.com/JetBrains/koog). Layered mo
   TUI dependency), a Kotlin port of pi's [`packages/tui`](https://github.com/earendil-works/pi/tree/main/packages/tui).
 - **ki-cli** — interactive TUI coding agent built on **ki-tui**, driving ki-agent.
 
-This document is the roadmap. **M1 is complete**; M2+ are the plan for continuing
-the build locally. Each milestone lists a goal, the concrete deliverables, the
-modules touched, and acceptance criteria you can check against.
+This document is the roadmap. **M1–M3 are complete**; M4+ are the plan for
+continuing the build locally. Each milestone lists a goal, the concrete
+deliverables, the modules touched, and acceptance criteria you can check against.
 
 ---
 
@@ -34,8 +34,8 @@ modules touched, and acceptance criteria you can check against.
 | # | Milestone | Status |
 |---|-----------|--------|
 | M1 | End-to-end vertical slice | ✅ Done (commit `6b8a812`) |
-| M2 | Native TUI framework (ki-tui), drop casciian | ▢ Planned |
-| M3 | Core file & shell toolset | ▢ Planned |
+| M2 | Native TUI framework (ki-tui), drop casciian | ✅ Done (commit `e4d7b3a`) |
+| M3 | Core file & shell toolset | ✅ Done |
 | M4 | Config, model catalog & sessions | ▢ Planned |
 | M5 | Tool permissions & approval | ▢ Planned |
 | M6 | Context & token management | ▢ Planned |
@@ -71,17 +71,50 @@ script-defined tool.
 - ~~No committed Gradle wrapper~~ — **resolved locally.** Wrapper generated with
   `gradle wrapper --gradle-version 8.14.3` (under JDK 21); still needs committing
   (see M9). `./gradlew build` is green.
-- casciian TUI is being replaced by our own **ki-tui** — see M2.
+- ~~casciian TUI is being replaced by our own **ki-tui**~~ — **done in M2.**
 - Single builtin tool (read file) + one script tool (grep). Expanded in M3.
 - No config file, no persistence, no permissions. Addressed M4/M5.
 
 ---
 
-## M2 — Native TUI framework (ki-tui), drop casciian
+## M2 — Native TUI framework (ki-tui), drop casciian  ✅ DONE
 
 **Goal:** replace the casciian dependency with our own terminal UI framework — a
 Kotlin port of pi's `packages/tui`. A differential-rendering, flicker-free TUI we
 fully control, then reimplement ki-cli's `KiScreen` on it and remove casciian.
+
+### Delivered (commit `e4d7b3a`)
+
+- New **`ki-tui`** module (`dev.ki.tui`, JDK 21 toolchain, `kotlin("test")` +
+  JUnit Platform). Zero runtime deps.
+- `Ansi` (CSI/SGR/OSC-8 constants incl. `SEGMENT_RESET`, sync-output CSI 2026),
+  `Width` (wcwidth table — CJK/emoji width 2, combining 0, tab 3; ANSI-aware
+  `visibleWidth`, `truncateToWidth` with pi reset-wrapping + pad, `wrapText`),
+  `Keys` (`enum Key`, `parse`/`matchesKey`/`isPrintable`, `splitInput`,
+  bracketed-paste), `Terminal`/`ProcessTerminal` (raw mode via `stty` subprocess
+  against `/dev/tty`, resize poll, shutdown-hook restore), `Component`/`Container`/
+  `Text`/`Spacer`, `Editor` (cursor + word nav, single-slot kill ring, undo,
+  char-wrap render with inverted cursor cell), and `Tui` — the differential
+  renderer (single UI thread, coalesced `requestRender`, first/full/append/in-place
+  strategies, per-line `applyLineResets`, viewport scroll tracking).
+- **ki-cli migrated:** `KiScreen` (transcript / editor / inverted status line) and
+  `AgentBridge` reimplemented on `Tui`; Ctrl-C/Ctrl-Q quit. casciian removed from
+  `libs.versions.toml` and `ki-cli/build.gradle.kts`.
+
+**Verified:** 71 ki-tui tests green (faithfully **ported from pi's own suite** —
+`Width`, `Keys`, `StdinBuffer`, `Editor`, TUI render via a ported Kotlin
+`VirtualTerminal` VT-grid harness — plus ki-specific + `DispatchTest` regressions);
+`./gradlew build` green; live pty submit round-trip confirmed. Ports exposed and
+fixed real ki bugs (tab width 0→3, `truncateToWidth` semantics, missing per-line
+resets, `splitInput` per-codepoint, `clearOnShrink` default).
+
+**Deferred to backlog (as planned):** inline images, full Kitty keyboard protocol,
+autocomplete/fuzzy, `Markdown`/`SelectList`, overlays/modals, IME cursor. One pi
+test (484, "umlauts across line breaks") relies on active Kitty protocol
+(LF→shift+enter); adapted to Shift+Enter since Kitty is deferred — a bare LF is
+Enter/submit, matching pi's kitty-inactive behaviour.
+
+<details><summary>Original M2 plan (kept for the record)</summary>
 
 **Why:** casciian is a heavyweight full-screen widget toolkit that doesn't match
 pi's model (inline, scrollback-friendly, differential redraw). Owning the layer
@@ -155,30 +188,62 @@ Explicitly **not** adopting JLine now — trading casciian for JLine would not b
   diff renderer against golden line buffers (full vs. append vs. in-place update),
   key parsing / `matchesKey`, and the editor ops (insert / word-move / undo / kill).
 
+</details>
+
 ---
 
-## M3 — Core file & shell toolset
+## M3 — Core file & shell toolset  ✅ DONE
 
-**Goal:** give the agent the tools a coding agent actually needs to edit a repo.
+**Goal:** give the agent the tools a coding agent actually needs to edit a repo —
+ported from pi's `packages/coding-agent/src/core/tools` (bash, read, write, edit, ls,
+truncate), so tool behaviour and error strings match pi.
 
-**Modules:** ki-agent (tool impls), ki-cli (wiring + bundled scripts).
+**Modules:** ki-agent (`dev.ki.agent.tools.builtin` — tool impls + tests), ki-cli
+(wiring), build (NuProcess dep).
 
-**Deliverables**
-- Builtin tools (koog `Tool`s in ki-agent or ki-cli `BuiltinTools`):
-  - `read_file` (have it), `list_dir` / `glob`, `write_file`, `edit_file`
-    (exact-string replace, must-read-before-edit semantics like pi/Claude Code),
-    `grep` (promote from script to builtin or keep as script — decide), `bash`
-    (run a shell command, capture stdout/stderr/exit, timeout).
-- `bash` tool: working-dir aware, configurable timeout, output truncation, never
-  interactive (`GIT_TERMINAL_PROMPT=0`-style guards).
-- `edit_file` safety: fail if `old_string` not unique / not found; `replace_all` flag.
-- Decide the split: which tools ship as compiled Kotlin (`BuiltinTools`) vs. as
-  `*.ki.kts` scripts under `ki-cli/src/main/resources/tools/`.
+### Decision: subprocess management + tool authoring
 
-**Acceptance**
-- Integration test (KI_IT): agent creates a file, greps it, edits it, reads back
-  the edit — full loop through the new tools.
-- Unit tests for `edit_file` uniqueness/not-found and `bash` timeout/truncation.
+- **NuProcess** (`com.zaxxer:nuprocess`) drives `bash` — async, no reactor-thread
+  per process, callbacks on a pump thread. **Pinned to 3.0.0**: 4.0.0 ships Java 25
+  bytecode (major 69) and won't load on the JDK 21 toolchain; 3.0.0 (Java 7) has the
+  identical API surface we use.
+- **Tool split:** `bash`/`read`/`write`/`ls` are authored with the same declarative
+  `tool { }` DSL the `.kts` scripts use and wrapped as `ScriptTool`. `edit` is the
+  one structured tool (its `edits[]` is an array of `{oldText,newText}` the scalar
+  DSL can't express) — a dedicated `EditTool : Tool<JsonObject,String>` with an
+  explicit `ToolParameterType.List(Object(...))` descriptor, decoding args by hand.
+  `grep` stays a bundled `*.ki.kts` script; `find` is deferred.
+
+### Delivered
+
+- `BashExec` (NuProcess): merges stdout+stderr, decodes UTF-8 once at the end (so a
+  multi-byte char split across read chunks can't corrupt), cwd-aware, optional
+  timeout (`waitFor` → `Integer.MIN_VALUE` sentinel → `destroy(true)`), non-zero exit
+  and timeout folded into the returned text.
+- `read` (offset/limit, `truncateHead` 2000 lines / 50KB, actionable continuation
+  notices), `write` (mkdir -p + byte count), `ls` (sorted, dotfiles, `/` suffix,
+  500-entry + byte cap), `edit` (exact-text `edits[]`: BOM strip, CRLF
+  normalize/restore, per-edit not-found / duplicate / empty / overlap / no-change
+  validation, reverse-order apply, all-or-nothing), `Truncate` (head/tail).
+- ki-cli wired to `dev.ki.agent.tools.builtin.BuiltinTools.all()` (the old
+  koog-`ReadFileTool` stub `BuiltinTools` removed); system prompt updated.
+
+**Verified:** 36 ki-agent tests green (`Truncate`, `FileTools` read/write/ls/bash,
+`EditTool` incl. CRLF, wiring) — ported from pi's `tools.test.ts`, adapted since ki
+tools return a single string and fold failures into it rather than throwing +
+returning a details/diff object. `./gradlew build` green.
+
+**Correction to the original plan:** the earlier draft said `edit` should have
+"must-read-before-edit semantics" and a "`replace_all` flag." pi's actual `edit` has
+neither — it's an `edits[]` array, each matched against the original, required to be
+unique and non-overlapping. Implemented pi's real contract (pi source is
+authoritative).
+
+**Deferred to backlog:** fuzzy matching in `edit` (NFKC + smart-quote/dash/space
+normalization — ki matches exact text only), image reads, streaming tool-output
+updates + full-output-to-temp-file persistence on truncation, process-tree kill
+(`destroy` kills the shell; detached grandchildren may survive), shellPath/WSL stdin
+transport, the `find` tool, and the KI_IT live agent loop (create→grep→edit→read).
 
 ---
 
@@ -352,5 +417,6 @@ export LITELLM_API_KEY=sk-...                    # if your proxy requires one
 ./gradlew :ki-cli:installDist && ki-cli/build/install/ki-cli/bin/ki-cli
 ```
 
-Start at **M2** (native TUI). Each milestone is independently shippable; keep the
-integration-test-behind-`KI_IT` discipline so `gradle build` stays green offline.
+Start at **M4** (config, model catalog & sessions). Each milestone is independently
+shippable; keep the integration-test-behind-`KI_IT` discipline so `gradle build`
+stays green offline.
