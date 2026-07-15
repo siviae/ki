@@ -1,0 +1,26 @@
+plugins {
+    alias(libs.plugins.kotlin.jvm)
+    application
+}
+
+kotlin {
+    jvmToolchain(21)
+}
+
+dependencies {
+    implementation(project(":ki-agent"))
+    implementation(libs.koog.agents)
+    implementation(libs.koog.agents.ext)
+    implementation(libs.casciian)
+    implementation(libs.kotlinx.coroutines.core)
+
+    testImplementation(kotlin("test"))
+}
+
+application {
+    mainClass.set("dev.ki.cli.MainKt")
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
