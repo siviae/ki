@@ -21,10 +21,12 @@ class KiLlm private constructor(
     val defaultModel: KiModel,
 ) {
     constructor(config: KiConfig) : this(
-        executor = MultiLLMPromptExecutor(
-            OpenAILLMClient(
-                apiKey = config.apiKey,
-                settings = OpenAIClientSettings(baseUrl = config.baseUrl),
+        executor = RetryingPromptExecutor(
+            MultiLLMPromptExecutor(
+                OpenAILLMClient(
+                    apiKey = config.apiKey,
+                    settings = OpenAIClientSettings(baseUrl = config.baseUrl),
+                )
             )
         ),
         defaultModel = KiModel(

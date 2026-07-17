@@ -12,8 +12,15 @@ dependencies {
     api(libs.koog.agents)
     api(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
+
+    testImplementation(kotlin("test"))
+    testImplementation(libs.kotlinx.coroutines.core)
 }
 
 application {
     mainClass.set("dev.ki.ai.MainKt")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
