@@ -39,11 +39,19 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M2 | Native TUI framework (ki-tui), drop casciian | ✅ Done (commit `e4d7b3a`) |
 | M3 | Core file & shell toolset | ✅ Done |
 | M4 | Config, model catalog, sessions & context | ✅ Done |
-| M5 | Tool permissions & approval | ▢ Planned |
+| M5 | Tool permissions & approval | ▢ Deferred (yolo mode for now) |
 | M6 | Context & token management | ✅ Done |
 | M7 | TUI: slash commands, cancel, cost | ✅ Done (streaming deferred) |
-| M8 | Robustness: retries, errors, logging | ▢ Planned |
+| M8 | Robustness, errors & recovery | ▢ Planned |
 | M9 | Packaging & distribution | ▢ Planned |
+| M10 | Live streaming & interactive TUI | ▢ Planned |
+| M11 | Tool suite completion | ▢ Planned |
+| M12 | Rich rendering & multi-provider | ▢ Planned |
+| M13 | Integration & snapshot testing | ▢ Planned |
+
+M8+ are the **most-reasonable reorganization of every deferred/backlog item** carried
+out of M1–M7 (each milestone below cites the milestone it inherits work from). M5
+(permissions) is intentionally skipped for now and picked up later.
 
 ---
 
@@ -658,41 +666,52 @@ green (change was additive).
 
 ---
 
-## M8 — Robustness: retries, errors, logging
+## M8 — Robustness, errors & recovery
 
-**Goal:** survive flaky networks and bad inputs without dying.
+**Goal:** survive flaky networks, bad inputs, and crashes without dying or corrupting
+a session. *(Existing M8 + carried: process-tree kill from M3; agent-persistence
+checkpoints deferred from M4 and flagged by M6.)*
 
-**Modules:** all.
+**Modules:** ki-ai (retry/backoff), ki-agent (tool-error handling, checkpoints,
+process kill), ki-cli (logging, flags), build.
 
 **Deliverables**
-- LLM call retries with exponential backoff on transient (5xx / network) errors;
+- LLM-call retries with exponential backoff on transient (5xx / network) errors;
   surface rate-limit (429) with backoff; fail fast on auth (401/403).
-- Tool errors are captured and returned to the model as tool results, never crash
-  the loop.
-- Structured logging (levels, to file under `.ki/logs/`), `--verbose` / `--debug`.
-- Graceful handling of malformed tool-call args from the model (validation +
-  a corrective message back to the model).
+- Tool errors captured and returned to the model as tool results — never crash the
+  loop. Malformed tool-call args (from the model) validated → corrective message back
+  to the model rather than an exception.
+- **Process-tree kill for `bash`** *(M3 deferral)* — `destroy` kills the shell but
+  detached grandchildren can survive; kill the process group / use `setsid` so a
+  timed-out or cancelled command leaves nothing running.
+- **Agent-persistence checkpoints** *(M4 Decision A "secondary role"; M6 flagged the
+  gap)* — an opt-in second `SessionStore`-backed koog `Persistence` provider snapshots
+  mid-run graph state for crash-recovery / rollback, and preserves the **raw
+  transcript** that M6 compaction overwrites in history. Default off.
+- Structured logging (levels → `.ki/logs/`), `--verbose` / `--debug`.
 
 **Acceptance**
-- Injected transient failure → retried then succeeds (unit test with a failing-
-  then-ok stub executor).
+- Injected transient failure → retried then succeeds (failing-then-ok stub executor).
 - A tool that throws yields an error tool-result and the agent recovers.
+- A `bash` command that spawns a background child is fully reaped on timeout/cancel
+  (no surviving PID).
+- With checkpoints on, killing the process mid-run and restarting recovers the run.
 
 ---
 
 ## M9 — Packaging & distribution
 
-**Goal:** a runnable, distributable `ki`.
+**Goal:** a runnable, distributable `ki` — the first "real v0.1" gate. *(Existing M9;
+includes committing the Gradle wrapper carried from M1.)*
 
 **Modules:** build, ki-cli.
 
 **Deliverables**
 - Commit the Gradle wrapper (generated locally under JDK 21; see M1 note).
-- `application` plugin on ki-cli → `installDist` / runnable scripts; a `ki`
-  launcher.
+- `application` plugin on ki-cli → `installDist` / runnable scripts; a `ki` launcher.
 - Optional: shadow/fat jar; GraalVM native-image experiment for fast startup.
 - CI (GitHub Actions): `gradle build` + tests on push (JDK 21); cache Gradle.
-- README: install, configure (LiteLLM URL/key), run, author a script tool.
+- README: install, configure (LiteLLM URL/key, `ki.toml`), run, author a script tool.
 
 **Acceptance**
 - Fresh clone → `./gradlew :ki-cli:installDist` → launcher starts a session.
@@ -700,16 +719,109 @@ green (change was additive).
 
 ---
 
-## Cross-cutting backlog (pick up any time)
+## M10 — Live streaming & interactive TUI
 
-- More bundled script tools (`*.ki.kts`): web fetch, apply-patch, run-tests.
-- ki-tui components deferred from M2: inline images (Kitty/iTerm2), `Markdown`,
-  `SelectList`, overlays/modals, full Kitty keyboard protocol, IME cursor.
-- Multi-provider in ki-ai beyond LiteLLM (direct OpenAI/Anthropic) via the same
-  `MultiLLMPromptExecutor` seam.
-- Tool-call parallelism where safe.
-- Prompt/system-instruction templating and per-project `KI.md`-style context file.
-- Golden/snapshot tests for TUI rendering.
+**Goal:** the interactive polish deferred from M7 (and M2) — the agent feels live.
+
+**Modules:** ki-agent (streaming strategy), ki-cli (transcript/streaming render),
+ki-tui (viewport, input).
+
+**Deliverables**
+- **Live token streaming** into the transcript *(M7 deferral)* — a streaming strategy
+  node that still carries the tool loop **and** M6 compression (guard the coexistence
+  with a test, as M6 did). Render token-by-token via `EventHandler` streaming frames.
+- **Streaming tool-output updates** *(M3 deferral)* — long-running `bash` output
+  streamed to the transcript as it arrives, not only at completion.
+- **Transcript scrollback** *(M7 deferral)* — a small `Tui` viewport-offset API +
+  PageUp/PageDown (today the renderer auto-pins to the bottom).
+- **Autocomplete / fuzzy matching** for slash commands and file paths *(deferred from
+  M2, reaffirmed in M7)*.
+
+**Acceptance**
+- A long reply renders incrementally; Ctrl-C still cancels cleanly (M7) mid-stream.
+- PageUp scrolls back through history without corrupting the live region.
+
+---
+
+## M11 — Tool suite completion
+
+**Goal:** finish the toolset to pi parity and make script-tool config real.
+
+**Modules:** ki-agent (tools), ki-cli (manifest → tool config), bundled scripts.
+
+**Deliverables**
+- **`find` tool** *(M3 deferral)*.
+- **`edit` fuzzy matching** *(M3 deferral)* — NFKC + smart-quote / dash / space
+  normalization (ki matches exact text only today).
+- **Per-tool config injection** *(M4 deferral)* — the manifest's `[tools.<name>]`
+  settings (already parsed) reach a script tool through an injected `config` handle,
+  completing the `ki.toml` convention.
+- **Image reads** in `read` *(M3 deferral)* — MIME detection / BMP-PNG handling.
+- **Full-output-to-temp-file on truncation** *(M3 deferral)* — persist the untruncated
+  tool output to a temp file and reference it in the truncation notice.
+- **`shellPath` / WSL stdin transport** for `bash` *(M3 deferral)*.
+- **More bundled script tools** *(backlog)* — web fetch, apply-patch, run-tests.
+- **Tool-call parallelism where safe** *(backlog)*.
+
+**Acceptance**
+- `find` + fuzzy `edit` match pi's behavior on the ported test cases.
+- A script tool reads a value from its `[tools.<name>]` manifest block at runtime.
+
+---
+
+## M12 — Rich rendering & multi-provider
+
+**Goal:** richer UI surfaces and provider reach beyond LiteLLM.
+
+**Modules:** ki-tui (components), ki-ai (providers), ki-agent (templating).
+
+**Deliverables**
+- **ki-tui components deferred from M2** — `Markdown` (render assistant replies),
+  `SelectList`, overlays / modals, inline images (Kitty / iTerm2 graphics), full Kitty
+  keyboard protocol, IME hardware-cursor positioning.
+- **Multi-provider in ki-ai** *(backlog)* — direct OpenAI / Anthropic clients beyond
+  the LiteLLM proxy, via the same `MultiLLMPromptExecutor` seam.
+- **Prompt / system-instruction templating** *(backlog)* — per-project instruction
+  composition (the `[context].files` mechanism landed in M4; this generalizes it to
+  templated / conditional context).
+
+**Acceptance**
+- Assistant Markdown renders (headings/code/lists) in the transcript.
+- ki talks to a non-LiteLLM provider through the same agent path (behind `KI_IT`).
+
+---
+
+## M13 — Integration & snapshot testing
+
+**Goal:** close the live/`KI_IT` and golden-test gaps left deferred across milestones.
+
+**Modules:** all (tests).
+
+**Deliverables**
+- **KI_IT live agent loop** *(M3 deferral)* — create → grep → edit → read end to end
+  against a real LiteLLM endpoint.
+- **Long-conversation / compaction recall IT** *(M6 deferral)* — a scripted long
+  session stays under the window and still recalls an early-turn fact after compaction.
+- **Remote-Postgres IT for `ki-store-spring`** *(M4 deferral)* — the `SessionStore`
+  contract against a real Postgres (Testcontainers), behind `KI_IT`.
+- **Golden / snapshot tests for TUI rendering** *(backlog)* — lock the differential
+  renderer against recorded line buffers.
+
+**Acceptance**
+- The full agent loop passes against a live endpoint under `KI_IT`.
+- Postgres and SQLite stores pass the same `SessionStore` suite.
+
+---
+
+## Residual / opportunistic (not milestoned)
+
+Low-priority items that don't warrant their own milestone; fold into a nearby one if
+convenient:
+
+- Chat-memory **preprocessor ordering** tuning (trim/filter) — passthrough today (M4/M6);
+  M6's compression strategy already meets the window-budget goal.
+- **HikariCP-pooled local backend** (M4) — unneeded for a single-user CLI; add only if a
+  local multi-connection use case appears.
 
 ---
 
@@ -735,6 +847,6 @@ export LITELLM_API_KEY=sk-...                    # if your proxy requires one
 ./gradlew :ki-cli:installDist && ki-cli/build/install/ki-cli/bin/ki-cli
 ```
 
-Start at **M4** (config, model catalog & sessions). Each milestone is independently
-shippable; keep the integration-test-behind-`KI_IT` discipline so `gradle build`
-stays green offline.
+**M1–M4, M6, M7 are done** (M5 deferred). Next up is **M8** (robustness, errors &
+recovery). Each milestone is independently shippable; keep the
+integration-test-behind-`KI_IT` discipline so `gradle build` stays green offline.
