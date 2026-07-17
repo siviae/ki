@@ -20,9 +20,10 @@ data class BashResult(val exitCode: Int?, val output: String, val timedOut: Bool
  * guarantees the closed stdout/stderr callbacks precede onExit, which unblocks
  * waitFor; the accumulated buffer is therefore complete once waitFor returns.
  *
- * Deferred vs. pi: live streaming updates, full-output-to-temp-file persistence on
- * truncation, and process-tree kill (destroy(true) kills the shell; detached
- * grandchildren may survive).
+ * On timeout the shell and its descendant tree are killed (see [killTree]).
+ *
+ * Deferred vs. pi: live streaming updates and full-output-to-temp-file persistence
+ * on truncation.
  */
 object BashExec {
     private val SHELL = if (System.getProperty("os.name").startsWith("Windows")) "cmd" else "/bin/bash"
@@ -61,7 +62,7 @@ object BashExec {
         // NuProcess returns Integer.MIN_VALUE when the timeout elapses before exit.
         val timedOut = code == Integer.MIN_VALUE || process.isRunning
         if (timedOut) {
-            process.destroy(true)
+            killTree(process)
             process.waitFor(0, TimeUnit.SECONDS) // reap
         }
 
@@ -71,5 +72,20 @@ object BashExec {
             output = output,
             timedOut = timedOut,
         )
+    }
+
+    /**
+     * Kills the shell and its whole descendant tree. `NuProcess.destroy` targets only
+     * the shell's pid, so a `cmd &` grandchild would reparent to init and survive; we
+     * therefore snapshot the descendants *before* destroying the shell (while they are
+     * still parented to it) and force-kill each afterwards. Detached double-forked
+     * daemons that have already escaped the tree are out of scope.
+     */
+    private fun killTree(process: NuProcess) {
+        val descendants = ProcessHandle.of(process.getPID().toLong())
+            .map { it.descendants().toList() }
+            .orElse(emptyList())
+        process.destroy(true)
+        descendants.forEach { it.destroyForcibly() }
     }
 }
