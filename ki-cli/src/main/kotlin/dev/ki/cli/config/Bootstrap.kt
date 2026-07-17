@@ -48,7 +48,8 @@ object Bootstrap {
     private fun resolveConfig(args: CliArgs, manifest: Manifest): KiConfig {
         // Model: CLI > env > manifest > default; a name matching a catalog alias resolves to its id.
         val requested = args.model ?: System.getenv("KI_MODEL") ?: manifest.llm.model ?: "gpt-4o"
-        val modelId = manifest.models[requested]?.id ?: requested
+        val entry = manifest.models[requested]
+        val modelId = entry?.id ?: requested
 
         val apiKey = manifest.llm.apiKeyEnv?.let { System.getenv(it) }
             ?: System.getenv("LITELLM_API_KEY")
@@ -57,7 +58,16 @@ object Bootstrap {
 
         val baseUrl = System.getenv("LITELLM_BASE_URL") ?: manifest.llm.baseUrl ?: "http://localhost:4000"
 
-        return KiConfig(baseUrl = baseUrl, apiKey = apiKey, defaultModelId = modelId)
+        // Catalog metadata (context window / max output) drives M6's context budget;
+        // fall back to KiConfig's defaults when the model isn't catalogued.
+        val defaults = KiConfig(baseUrl, apiKey, modelId)
+        return KiConfig(
+            baseUrl = baseUrl,
+            apiKey = apiKey,
+            defaultModelId = modelId,
+            contextWindow = entry?.contextWindow ?: defaults.contextWindow,
+            maxOutputTokens = entry?.maxOutputTokens ?: defaults.maxOutputTokens,
+        )
     }
 
     private fun buildTools(manifest: Manifest, root: Path): List<ToolBase<*, *>> {

@@ -40,7 +40,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M3 | Core file & shell toolset | ✅ Done |
 | M4 | Config, model catalog, sessions & context | ✅ Done |
 | M5 | Tool permissions & approval | ▢ Planned |
-| M6 | Context & token management | ▢ Planned |
+| M6 | Context & token management | ✅ Done |
 | M7 | TUI: slash commands, cancel, cost | ▢ Planned |
 | M8 | Robustness: retries, errors, logging | ▢ Planned |
 | M9 | Packaging & distribution | ▢ Planned |
@@ -527,9 +527,52 @@ Claude Code permission modes.
 
 ---
 
-## M6 — Context & token management
+## M6 — Context & token management  ✅ DONE
 
 **Goal:** long sessions don't blow the context window.
+
+### Delivered (as built — authoritative)
+
+- **History compression via koog's native strategy.** `KiAgent` builds on
+  `singleRunStrategyWithHistoryCompression(HistoryCompressionConfig(isHistoryTooBig,
+  FromLastNMessages(keepLastMessages)))`. After a tool step, if the prompt exceeds the
+  budget the older turns are summarized into a TL;DR while the **system prompt + first
+  user message + the last N messages** are preserved (koog's `composeMessageHistory`).
+  `compressHistory=false` ⇒ `NoCompression` (same graph, trigger disabled) so there is
+  one construction path.
+- **Token accounting.** `KiTokenizer` wraps koog's regex `PromptTokenizer` for the
+  **budget trigger** only (it undercounts BPE → biased up by a `SAFETY=1.25` factor);
+  `budget = max(256, contextWindow * contextBudgetRatio)` (ratio default 0.7).
+- **Context window plumbed end to end.** `KiConfig` carries `contextWindow` /
+  `maxOutputTokens`; `Bootstrap` fills them from the `[models.<alias>]` catalog entry;
+  `KiLlm.defaultModel` uses them — so the budget reflects the *actual* configured
+  model, not a hardcoded 128k. (`KiLlm` gained an `of(executor, model)` factory for
+  embedding/tests.)
+- **Real usage surfaced.** An `EventHandler` `onLLMCallCompleted` hook reads the LLM's
+  own `ResponseMetaInfo` token counts into `KiAgent.lastUsage` (`ContextUsage`:
+  tokens / window / percent / reported-vs-estimated); the CLI status line shows
+  `— <tok>/<window> tok (<pct>%)` after each turn (`~` prefix when estimated). Trigger
+  uses the estimator; display uses reported counts — the two are kept separate.
+
+**Verified:** `./gradlew build` green, 139 tests. The key guard is
+`ContextCompressionTest` — a **coexistence** test through the real `KiAgent`: forces
+the context over budget (large system prompt), drives a tool call to reach the
+compression edge, and asserts (a) the summarize turn fires (3 LLM calls; the
+"comprehensive summary of this conversation" prompt is seen), (b) **chat-memory still
+persists** the session under the custom strategy, (c) the **system prompt survives**
+compaction, (d) usage is captured. Plus `KiTokenizerTest` and a Bootstrap test that
+the catalog window reaches `KiLlm`.
+
+**Note / deferred:** compression is **destructive to the persisted transcript** —
+`interceptStrategyCompleted` stores the (now compressed) prompt, so resume reloads the
+compacted history, not the raw one. That satisfies the acceptance criterion (early
+context survives via the TL;DR) but means a full audit trail, if ever needed, belongs
+to the M8 checkpoint seam. Coherent-long-conversation + early-fact-recall remain live
+IT (behind `KI_IT`) since they're LLM-quality, not deterministic. Chat-memory
+preprocessor ordering intentionally left passthrough (redundant once compression
+persists the compacted prompt).
+
+<details><summary>Original M6 plan (kept for the record)</summary>
 
 **Modules:** ki-ai (token counting), ki-agent (history strategy).
 
@@ -545,6 +588,8 @@ Claude Code permission modes.
   coherently (IT).
 - Compression preserves the task thread (assert a fact from an early turn is
   still recalled after compaction).
+
+</details>
 
 ---
 

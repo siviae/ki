@@ -53,6 +53,26 @@ class BootstrapTest {
         }
     }
 
+    @Test fun `model catalog context window flows into the llm (M6 budget)`() {
+        val cfg = writeManifest(
+            """
+            [llm]
+            model = "small"
+            [db]
+            path = "ki.db"
+            [tools.bash]
+            [models.small]
+            id = "gpt-4o-mini"
+            context_window = 8000
+            """.trimIndent()
+        )
+        val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
+        session.store.use {
+            assertEquals("gpt-4o-mini", session.llm.defaultModel.id)
+            assertEquals(8000, session.llm.defaultModel.contextWindow)
+        }
+    }
+
     @Test fun `--continue resumes the most recent session`() {
         val cfg = writeManifest("[db]\npath = \"ki.db\"\n[tools.bash]\n")
         // Seed two sessions directly in the store the bootstrap will open.

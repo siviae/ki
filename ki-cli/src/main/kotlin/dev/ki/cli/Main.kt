@@ -42,7 +42,7 @@ fun main(argv: Array<String>) {
         }
 
         val tui = Tui(ProcessTerminal())
-        KiScreen(tui, runner)
+        KiScreen(tui, runner, usage = { agent.lastUsage })
         tui.start()
         tui.awaitStop()
     }

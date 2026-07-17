@@ -23,6 +23,8 @@ import kotlinx.coroutines.SupervisorJob
 class KiScreen(
     private val tui: Tui,
     runner: suspend (String) -> String,
+    /** Optional: latest context usage, rendered into the status line after each turn. */
+    private val usage: () -> dev.ki.agent.context.ContextUsage? = { null },
 ) {
     private val transcript = Container()
     private val editor = Editor()
@@ -63,9 +65,16 @@ class KiScreen(
         bridge.submit(text) { result ->
             appendLine(result)
             busy = false
-            status.set("ki • ready")
+            status.set("ki • ready" + usageSuffix())
             tui.requestRender()
         }
+    }
+
+    /** " — 1.2k/128k tok (1%)" from the latest usage, or "" if none yet. */
+    private fun usageSuffix(): String {
+        val u = usage() ?: return ""
+        val mark = if (u.reported) "" else "~"
+        return " — $mark${u.tokens}/${u.window} tok (${u.percent}%)"
     }
 
     /** Append a transcript entry (may contain newlines). Runs on the UI thread. */

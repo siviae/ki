@@ -10,23 +10,34 @@ import ai.koog.prompt.executor.model.PromptExecutor
  * providers behind one OpenAI-compatible endpoint, so this wraps koog's OpenAI
  * client pointed at the proxy and exposes it as a koog [PromptExecutor] that the
  * agent runtime builds on.
+ *
+ * The primary constructor builds the LiteLLM-backed executor from [KiConfig]. The
+ * secondary [of] factory takes an explicit executor + model — used when embedding ki
+ * in a host that already supplies its own executor, and by tests.
  */
-class KiLlm(private val config: KiConfig) {
-
-    val defaultModel: KiModel = KiModel(id = config.defaultModelId)
-
-    private val client: OpenAILLMClient = OpenAILLMClient(
-        apiKey = config.apiKey,
-        settings = OpenAIClientSettings(baseUrl = config.baseUrl),
+class KiLlm private constructor(
+    /** koog executor used by ki-agent to construct the agent. */
+    val executor: PromptExecutor,
+    val defaultModel: KiModel,
+) {
+    constructor(config: KiConfig) : this(
+        executor = MultiLLMPromptExecutor(
+            OpenAILLMClient(
+                apiKey = config.apiKey,
+                settings = OpenAIClientSettings(baseUrl = config.baseUrl),
+            )
+        ),
+        defaultModel = KiModel(
+            id = config.defaultModelId,
+            contextWindow = config.contextWindow,
+            maxOutputTokens = config.maxOutputTokens,
+        ),
     )
-
-    /**
-     * koog executor used by ki-agent to construct the agent. A single-client
-     * [MultiLLMPromptExecutor] — there is only ever one client (the LiteLLM proxy).
-     */
-    val executor: PromptExecutor = MultiLLMPromptExecutor(client)
 
     companion object {
         fun fromEnv(): KiLlm = KiLlm(KiConfig.fromEnv())
+
+        /** Build from an explicit executor + model (embedding / tests). */
+        fun of(executor: PromptExecutor, model: KiModel): KiLlm = KiLlm(executor, model)
     }
 }
