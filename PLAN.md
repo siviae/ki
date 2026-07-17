@@ -18,7 +18,9 @@ deliverables, the modules touched, and acceptance criteria you can check against
 
 ## Conventions
 
-- **Package root:** `dev.ki.*` (`dev.ki.ai`, `dev.ki.agent`, `dev.ki.tui`, `dev.ki.cli`).
+- **Package root:** `dev.ki.*` (`dev.ki.ai`, `dev.ki.agent`, `dev.ki.tui`,
+  `dev.ki.cli`; M4 added `dev.ki.store` (SPI, in ki-agent), `dev.ki.cli.store`
+  (SQLite impl), `dev.ki.store.spring` (JdbcTemplate impl)).
 - **Build:** Gradle (Kotlin DSL), version catalog in `gradle/libs.versions.toml`.
   Built and tested with Gradle 8.14.3. **Toolchain: JDK 21** (Gradle 8.14.3 does
   not support running on JDK 25 — use JDK 21 for the wrapper and all builds).
@@ -36,7 +38,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M1 | End-to-end vertical slice | ✅ Done (commit `6b8a812`) |
 | M2 | Native TUI framework (ki-tui), drop casciian | ✅ Done (commit `e4d7b3a`) |
 | M3 | Core file & shell toolset | ✅ Done |
-| M4 | Config, model catalog & sessions | ▢ Planned |
+| M4 | Config, model catalog, sessions & context | ✅ Done |
 | M5 | Tool permissions & approval | ▢ Planned |
 | M6 | Context & token management | ▢ Planned |
 | M7 | TUI: slash commands, cancel, cost | ▢ Planned |
@@ -247,28 +249,257 @@ transport, the `find` tool, and the KI_IT live agent loop (create→grep→edit�
 
 ---
 
-## M4 — Config, model catalog & sessions
+## M4 — Config, model catalog, sessions & context loading  ✅ DONE
 
-**Goal:** real configuration and persistence so runs are reproducible and resumable.
+### Delivered (as built — authoritative; supersedes the planning notes below)
 
-**Modules:** ki-ai (model catalog, config), ki-cli (session store, CLI args).
+Storage compatibility layer, both deployments, one contract:
+- **`SessionStore` SPI lives in `ki-agent`** (`dev.ki.store`) — the agent owns the
+  contract. `StoredMessage(seq, role, json)` / `SessionInfo`; `save` is replace
+  semantics (koog hands the full history each store). `StoreChatHistoryProvider`
+  adapts it to koog's chat-memory `ChatHistoryProvider`; `MessageCodec` is the **only**
+  koog-serialization touch point (koog's kotlinx `Json` for the `Message` blob).
+- **Local impl `SqliteSessionStore` in `ki-cli`** (`dev.ki.cli.store`) — raw
+  `sqlite-jdbc`, two tables (`ki_message`, `ki_session`), `CREATE TABLE IF NOT EXISTS`,
+  no ORM/migration framework. **No standalone `ki-store` module** (the earlier plan's
+  module was folded away — SPI→agent, impl→cli).
+- **Remote reference impl `JdbcTemplateSessionStore` in new `ki-store-spring`**
+  (`dev.ki.store.spring`) — same portable DDL over Spring `JdbcTemplate` + a
+  `@Configuration` bean; idempotent schema init for drop-in Spring/Postgres use.
+- **`KiAgent`** installs koog chat-memory when given a provider; `run(input, sessionId)`
+  keys persistence — koog derives `runId` from `sessionId`, so resume = same id.
 
-**Deliverables**
-- Config file (e.g. `~/.config/ki/config.toml` or `.ki/config.*`): LiteLLM base
-  URL, API key (env-override, never logged), default model, request timeouts.
-  Precedence: CLI flag > env > config file > default.
+Config / manifest / context:
+- **`ki.toml` manifest (mandatory for CLI)** parsed with **Jackson** (`--config`,
+  default `./ki.toml`; missing ⇒ clear error, exit 2). It is the **explicit tool
+  allowlist** — builtins enabled by name, script tools by `script` path, per-tool
+  config in the entry; nothing auto-loads. `[context].files` prepend to the system
+  prompt; `[llm]`, `[db]`, `[models]` catalog. `Bootstrap` resolves effective config
+  (CLI > env > manifest > default) and assembles llm + tools + store + provider.
+- **CLI args:** `--config/-c`, `--model/-m`, `--db`, `--resume/-r <id>`, `--continue`
+  (latest session via `ki_session.updated_at`), one-shot prompt vs. interactive.
+- Serializer split (decided): **koog kotlinx Json for the `Message` blob** (koog's
+  native contract, opaque `TEXT`), **Jackson for our own types** (manifest/config/
+  catalog) to match prod.
+
+**Verified:** `./gradlew build` green **offline**, 136 tests, 0 failures. Highlights —
+(a) **resume integration test** (two runs, one `SessionStore`, same `sessionId`)
+proves koog's chat-memory merge reloads history, does **not** drop the new turn, and
+does **not** duplicate the system prompt; (b) **codec gate** round-trips a full
+tool-loop transcript (`Tool.Call` + `Tool.Result` parts survive); (c) SQLite +
+JdbcTemplate stores both pass replace/list-ordering; (d) shipped `ki.toml` boots
+end-to-end (compiles the grep script, opens the store, 6 tools); (e) **isolation as
+acceptance** — `:ki-cli:dependencies` runtimeClasspath has **no `spring*`, no
+`org.postgresql`** (sqlite + jackson only).
+
+**Corrections vs. the planning notes:** SPI moved from a `ki-store` module into
+`ki-agent`; SQLite impl into `ki-cli`; the pgmicro/`tech.turso`/Liquibase gate stack
+is gone (moot — schema is one portable table, not a shared driver); added the
+`ki_session` table so `--continue` has recency ordering; Jackson chosen for our types.
+
+**Deferred:** per-tool `settings` from the manifest are parsed and carried but **not
+yet injected** into script tools (scripts still read env) — wire an injected `config`
+handle when the first API-wrapping tool needs it; koog `Persistence` checkpoints
+(M8); real preprocessor ordering (M6); live remote-Postgres IT behind `KI_IT`.
+
+<details><summary>Original M4 plan (kept for the record)</summary>
+
+**Goal:** real configuration, persistence, and context so runs are reproducible and
+resumable — and so ki fits **both** of its target deployments from one codebase:
+
+- **Local / lightweight** — a single binary, no external services. Sessions persist
+  to an **embedded SQLite file** (`.ki/ki.db`) via the minimal `sqlite-jdbc` driver.
+  **Zero Spring, zero Postgres on the classpath.**
+- **Remote / embedded-in-Spring** — ki runs *inside* a host Spring application and
+  persists to that app's **Postgres** via **`JdbcTemplate`**, sharing its
+  connection pool and transactions.
+
+The unifying design is a **narrow storage SPI** with two hand-written
+implementations — *not* a shared JDBC abstraction layer. Both back koog's history
+feature identically; the agent core never knows which backend it's on.
+
+**Modules:** ki-ai (model catalog, config); ki-agent (koog history provider over the
+SPI; takes tools + context as constructor inputs — stays config-format-agnostic);
+new **`ki-store`** (the SPI + the default SQLite/`sqlite-jdbc` impl — no Spring, no
+Postgres); new **`ki-store-spring`** (the `JdbcTemplate`/Postgres impl, pulled in
+only by a host Spring app); ki-cli (`ki.toml` manifest parsing → tools + context,
+CLI args, resume wiring); build (`org.xerial:sqlite-jdbc`; Spring deps confined to
+`ki-store-spring`).
+
+### Decision A — persist via koog's history feature, not JSON files
+
+Unchanged by the storage pivot. Use koog's built-in conversation persistence rather
+than writing `.jsonl`.
+
+- **`ChatHistoryProvider` is the session store** (koog *chat-memory* feature):
+  `suspend load(conversationId): List<Message>` seeds the next `agent.run()`, and
+  `suspend store(conversationId, messages)` saves on successful completion —
+  `conversationId` = ki session id. This *is* resume-with-history. Implement a
+  single custom `ChatHistoryProvider` that delegates to the storage SPI (below), so
+  swapping backends never touches agent code.
+  - **How it persists:** koog `Message`s are `@Serializable`; tool interactions ride
+    inside them as `MessagePart.Tool.Call` / `MessagePart.Tool.Result` parts (they
+    are message *parts*, not separate roles — verified against
+    `prompt-model-jvm`). So persistence is: serialize each `Message` with koog's
+    JSON and store one row per message — `(conversation_id, seq, role, message_json)`
+    — which preserves the full tool-calling transcript without a bespoke schema.
+- **Chat-memory preprocessor order is an M6 seam, not M4.** koog runs
+  `ChatMemoryPreProcessor`s in sequence and order changes the result (docs' example:
+  `windowSize(10)` then filter ≠ filter then `windowSize(10)` — each receives the
+  prior's output). M4 wires the pipeline with a **passthrough / large-window**
+  default and records the ordering contract; M6 (context/token management) owns the
+  real trimming/summarization order.
+- **Agent Persistence (checkpoints) is a *secondary* role, not the session store.**
+  koog's `Persistence` feature (`PersistenceStorageProvider`,
+  `createCheckpointAfterNode` / `rollbackToCheckpoint`) snapshots mid-execution graph
+  state for crash-recovery / undo — a different concern from the transcript. Plan it
+  as an optional second SPI-backed `PersistenceStorageProvider` with its own tables;
+  **default off**, revisit alongside M8 robustness. Do not conflate with history.
+
+### Decision B — storage SPI + two impls (SQLite local / Postgres-Spring remote)
+
+**This replaces the old JDBI + pgmicro plan entirely.** pgmicro is dropped: no
+embedded PG-dialect DB, no `tech.turso` native driver, no shared-driver dialect
+problem. The user chose *two different, deliberately minimal* access mechanisms, so
+the compatibility layer is a **domain interface**, not a mini-ORM.
+
+- **SPI (in `ki-store`, zero DB-framework deps):**
+  ```
+  interface SessionStore {
+      fun load(conversationId: String): List<StoredMessage>      // ordered by seq
+      fun append(conversationId: String, messages: List<StoredMessage>)
+      fun listSessions(): List<SessionInfo>
+  }
+  ```
+  `StoredMessage` = `(seq, role, messageJson)`. The koog `ChatHistoryProvider`
+  adapter maps koog `Message` ⇄ `StoredMessage` and is the only code that touches
+  koog serialization — both impls stay ignorant of koog.
+- **Local impl — `SqliteSessionStore` (default, in `ki-store`):** raw SQL over
+  `org.xerial:sqlite-jdbc`, one `Connection` to `jdbc:sqlite:.ki/ki.db`. No JDBI, no
+  Spring, no pool. Schema bootstrapped with `CREATE TABLE IF NOT EXISTS` on first
+  open — **no migration framework** for one table.
+- **Remote impl — `JdbcTemplateSessionStore` (in `ki-store-spring`):** the same raw
+  SQL issued through Spring `JdbcTemplate`, reusing the host app's `DataSource` /
+  transaction manager. Exposed as a `@Configuration` / auto-config bean so a host app
+  gets it by adding the module. Idempotent `CREATE TABLE IF NOT EXISTS` on init so
+  integration is genuinely "drop the dependency in and go"; if a host prefers to own
+  the DDL via its own Liquibase/Flyway, ki ships the table contract and the
+  create-if-not-exists is a harmless no-op.
+- **The schema is one trivial, portable table** — `conversation_id TEXT`,
+  `seq INTEGER`, `role TEXT`, `message_json TEXT`, PK `(conversation_id, seq)`. This
+  DDL is valid on **both** SQLite and Postgres verbatim; that portability is *why*
+  the pivot removes the whole dialect-gate stack.
+
+**Decided:** `ki-store-spring` **ships in-repo** as the separate optional module — a
+concrete `JdbcTemplateSessionStore` a host app gets by adding the dependency, so
+"seamless Spring integration" is real, not just an SPI contract. The CLI never
+depends on it.
+
+### ⚠ Verification gates (only one survives the pivot)
+
+The old gates 1–3 (does `tech.turso` speak PG dialect / native-jar distribution /
+does Liquibase know the driver) are **gone** — no shared driver, no native jar, no
+migration framework on the local path. Remaining:
+
+1. **History round-trips the full tool loop.** Backend-independent koog-serialization
+   risk. Before building on it, serialize a `List<Message>` from a real tool-calling
+   turn (Assistant + `Tool.Call` + `Tool.Result`) through the `ChatHistoryProvider`
+   adapter and assert every part survives `load`. If koog's history drops tool parts,
+   add custom serialization or fall back to the Persistence checkpoint payload for
+   the transcript. Verify against `SqliteSessionStore` (the default) first.
+
+### Decision C — a single explicit `ki.toml` manifest (CLI); programmatic config (Spring)
+
+**Decided.** Two configuration paths, deliberately different, meeting at the same
+agent constructor:
+
+- **CLI — one mandatory `ki.toml` manifest.** Located via `--config <path>`, default
+  `./ki.toml`. **The manifest is required** — no manifest ⇒ a clear startup error
+  (not a silent zero-tool run). The earlier `CONTEXT_PATH` env-scan / `PATH`-style
+  auto-discovery idea is **dropped** in favor of this one explicit file.
+- **Spring — programmatic only.** Inside a host Spring app the agent is built in code:
+  tools and their configuration are constructed and passed manually. **No manifest,
+  no TOML/YAML loading on the Spring path.** All configuration of the Spring-app
+  deployment is **out of scope** for this project — ki-agent exposes the constructor
+  seam; the host owns wiring.
+
+**The manifest is an explicit allowlist — every tool the agent may use is listed in
+it, with its configuration. Nothing auto-loads.** No directory scan, no implicit
+`.ki/tools`, no bundled-tool auto-extract. A tool the agent can call ⇔ a `[tools.*]`
+entry in the manifest. This is the M5 permission model's foundation (the allowlist
+already lives here) and makes a run fully reproducible from one file.
+
+```toml
+[context]
+files = ["KI.md", "docs/conventions.md"]   # instruction context, prepended in order
+
+[tools.bash]                               # builtin: listed by name = enabled
+[tools.read]
+[tools.edit]
+
+[tools.jira]                               # script tool: has a script path + config
+script = "tools/jira.ki.kts"
+base_url = "https://acme.atlassian.net"
+token_env = "JIRA_TOKEN"                   # secret by env reference, never inline
+```
+
+- **Builtin tools** (`bash`/`read`/`write`/`edit`/`ls`, `grep` script): available
+  only when listed by name; a bare `[tools.<name>]` enables, an optional config block
+  tunes it. Not listed ⇒ not registered.
+- **Script tools**: a `[tools.<name>]` with a `script = "…"` path (resolved relative
+  to the manifest). Its remaining keys are the tool's config, read via an injected
+  `config` handle. `ScriptToolLoader` compiles exactly the scripts the manifest
+  names — it no longer scans a directory.
+- **Secrets never inline.** Config references secrets by env var
+  (`token_env = "JIRA_TOKEN"`), never literal keys — the manifest is a committable
+  file. Extends the existing "API key via env, never logged" rule.
+
+**Boundary:** manifest parsing lives in **ki-cli** (or a small `dev.ki.config`
+piece), which reads `ki.toml` → builds the tool list + context → constructs the
+agent. **ki-agent stays config-format-agnostic**: it takes tools and context as
+constructor inputs, exactly as the Spring path supplies them programmatically. Same
+seam, two producers.
+
+### Other deliverables
+
+- Config file (`~/.config/ki/config.toml` or `.ki/config.*`): LiteLLM base URL, API
+  key (env-override, never logged), default model, request timeouts, **storage
+  backend** (`sqlite` default + file path | `postgres` handled by the host Spring
+  app). Precedence: CLI flag > env > file > default.
 - Model catalog in `KiModel`: named entries → LiteLLM model id + capabilities +
   context window; list/select at runtime.
-- CLI args (ki-cli `Main`): `--model`, `--config`, working dir, one-shot prompt
-  vs. interactive.
-- Session persistence: write transcript + tool calls to `.ki/sessions/<id>.jsonl`;
-  `--resume <id>` / `--continue` to reload history into the agent.
+- CLI args (ki-cli `Main`): `--model`, `--config` (path to `ki.toml`, default
+  `./ki.toml`, **required to exist**), `--db` (SQLite file path), working dir,
+  one-shot prompt vs. interactive, `--resume <id>` / `--continue`.
 
-**Acceptance**
-- Start a session, exit, resume — prior turns are in context.
-- Switching `--model` changes the model actually sent to LiteLLM (assert in an
-  IT or via a stub executor).
-- Missing/invalid config yields a clear actionable error, not a stack trace.
+### Acceptance
+
+- Start a session, exit, resume (`--resume`/`--continue`) — prior turns **and tool
+  results** are back in context, read from the SQLite DB.
+- **Dependency isolation is verifiable, not just asserted:**
+  `./gradlew :ki-cli:dependencies` shows **no `spring*` and no `org.postgresql`** on
+  the CLI's runtime classpath. The Spring/Postgres impl lives only in
+  `ki-store-spring`, which the CLI never depends on.
+- The same `SessionStore` SPI + koog `ChatHistoryProvider` adapter works against both
+  impls: `SqliteSessionStore` (unit-tested, default) and `JdbcTemplateSessionStore`
+  (integration-tested behind `KI_IT` against a real/embedded Postgres).
+- `./gradlew build` stays green **offline** — no test requires a running Postgres; the
+  SQLite `.db` is self-contained.
+- A `ki.toml` manifest is the sole tool allowlist: a tool listed in it is callable,
+  one omitted is not registered; a per-tool config value (incl. an env-referenced
+  secret) reaches the tool. Missing manifest ⇒ clear startup error. The Spring path
+  builds the identical agent programmatically with no manifest.
+- Switching `--model` changes the model actually sent to LiteLLM (stub executor).
+- Missing/invalid config or an unreachable DB yields a clear actionable error.
+
+### Deferred / backlog
+
+- koog `Persistence` checkpoints / rollback (Decision A) — wire in M8.
+- Real preprocessor ordering (trim/summarize) — M6.
+- A pooled local backend (HikariCP) — unneeded for a single-user CLI; add only if a
+  local multi-connection use case appears.
+
+</details>
 
 ---
 

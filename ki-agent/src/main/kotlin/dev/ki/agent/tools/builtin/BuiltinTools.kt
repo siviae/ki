@@ -13,11 +13,19 @@ import java.nio.file.Path
  * All tools resolve relative paths against [cwd] (default: the process cwd).
  */
 object BuiltinTools {
-    fun all(cwd: Path = processCwd()): List<ToolBase<*, *>> = listOf(
-        ScriptTool(bashTool(cwd)),
-        ScriptTool(readTool(cwd)),
-        ScriptTool(writeTool(cwd)),
-        ScriptTool(lsTool(cwd)),
-        EditTool(cwd),
-    )
+    fun all(cwd: Path = processCwd()): List<ToolBase<*, *>> =
+        NAMES.map { byName(it, cwd)!! }
+
+    /** Names of the builtin tools, as referenced in a `ki.toml` manifest's `[tools.*]`. */
+    val NAMES: Set<String> = setOf("bash", "read", "write", "ls", "edit")
+
+    /** Build a single builtin by manifest name, or `null` if [name] is not a builtin. */
+    fun byName(name: String, cwd: Path = processCwd()): ToolBase<*, *>? = when (name) {
+        "bash" -> ScriptTool(bashTool(cwd))
+        "read" -> ScriptTool(readTool(cwd))
+        "write" -> ScriptTool(writeTool(cwd))
+        "ls" -> ScriptTool(lsTool(cwd))
+        "edit" -> EditTool(cwd)
+        else -> null
+    }
 }

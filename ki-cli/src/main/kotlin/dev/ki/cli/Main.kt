@@ -1,14 +1,14 @@
 package dev.ki.cli
 
-import ai.koog.agents.core.tools.ToolBase
 import dev.ki.agent.KiAgent
-import dev.ki.agent.tools.ScriptToolLoader
-import dev.ki.agent.tools.builtin.BuiltinTools
-import dev.ki.ai.KiLlm
+import dev.ki.cli.config.Bootstrap
+import dev.ki.cli.config.CliArgs
+import dev.ki.cli.config.ManifestException
 import dev.ki.cli.ui.KiScreen
 import dev.ki.tui.ProcessTerminal
 import dev.ki.tui.Tui
-import java.io.File
+import kotlinx.coroutines.runBlocking
+import kotlin.system.exitProcess
 
 private val SYSTEM_PROMPT = """
     You are ki, a terse coding agent. Use the provided tools to work in the repo:
@@ -16,34 +16,34 @@ private val SYSTEM_PROMPT = """
     and run bash commands. Keep answers minimal and direct.
 """.trimIndent()
 
-/** Bundled default tool scripts, extracted to .ki/tools on first run. */
-private val BUNDLED_SCRIPTS = listOf("grep.ki.kts")
+fun main(argv: Array<String>) {
+    val args = CliArgs.parse(argv)
 
-fun main() {
-    val llm = KiLlm.fromEnv()
+    val session = try {
+        Bootstrap.build(args, SYSTEM_PROMPT)
+    } catch (e: ManifestException) {
+        System.err.println("ki: ${e.message}")
+        exitProcess(2)
+    }
 
-    val toolsDir = File(".ki/tools")
-    extractBundledScripts(toolsDir)
-    print("Compiling tool scripts… ")
-    val scriptTools = ScriptToolLoader().loadAll(toolsDir)
-    println("${scriptTools.size} loaded.")
+    val agent = KiAgent(
+        llm = session.llm,
+        systemPrompt = session.systemPrompt,
+        tools = session.tools,
+        historyProvider = session.historyProvider,
+    )
+    val runner: suspend (String) -> String = { input -> agent.run(input, session.sessionId) }
 
-    val tools: List<ToolBase<*, *>> = BuiltinTools.all() + scriptTools
-    val agent = KiAgent(llm, SYSTEM_PROMPT, tools)
+    session.store.use {
+        // One-shot mode: run a single prompt, print the reply, exit.
+        session.oneShotPrompt?.let { prompt ->
+            println(runBlocking { runner(prompt) })
+            return
+        }
 
-    val tui = Tui(ProcessTerminal())
-    KiScreen(tui, agent::run)
-    tui.start()
-    tui.awaitStop()
-}
-
-/** Copy bundled scripts from resources into [toolsDir] if not already present. */
-private fun extractBundledScripts(toolsDir: File) {
-    toolsDir.mkdirs()
-    for (name in BUNDLED_SCRIPTS) {
-        val dest = File(toolsDir, name)
-        if (dest.exists()) continue
-        val res = object {}.javaClass.getResourceAsStream("/tools/$name") ?: continue
-        res.use { input -> dest.outputStream().use { input.copyTo(it) } }
+        val tui = Tui(ProcessTerminal())
+        KiScreen(tui, runner)
+        tui.start()
+        tui.awaitStop()
     }
 }

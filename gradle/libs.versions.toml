@@ -5,6 +5,9 @@ koogExt = "1.0.0-beta-preview7"
 coroutines = "1.10.2"
 serialization = "1.9.0"
 nuprocess = "3.0.0" # 4.0.0 targets Java 25 bytecode; 3.0.0 (Java 7) works on JDK 21
+sqlite = "3.47.1.0"
+jackson = "2.18.2" # prod serializer: our own config/manifest/catalog types (not koog Message)
+spring = "6.2.1" # spring-jdbc/context for the optional ki-store-spring module only
 
 [libraries]
 koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
@@ -14,6 +17,18 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 
 # Subprocess management (bash tool) — async, no reactor-thread-per-process
 nuprocess = { module = "com.zaxxer:nuprocess", version.ref = "nuprocess" }
+
+# Local session store (ki-cli): minimal embedded SQLite via sqlite-jdbc
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite" }
+
+# Jackson — serializer for our own types (ki.toml manifest, config, model catalog)
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+jackson-module-kotlin = { module = "com.fasterxml.jackson.module:jackson-module-kotlin", version.ref = "jackson" }
+jackson-dataformat-toml = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-toml", version.ref = "jackson" }
+
+# Spring — remote session store reference impl (ki-store-spring only)
+spring-jdbc = { module = "org.springframework:spring-jdbc", version.ref = "spring" }
+spring-context = { module = "org.springframework:spring-context", version.ref = "spring" }
 
 # Kotlin scripting host (compile .kts tool scripts on startup)
 kotlin-scripting-common = { module = "org.jetbrains.kotlin:kotlin-scripting-common", version.ref = "kotlin" }

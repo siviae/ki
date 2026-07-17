@@ -1,0 +1,99 @@
+package dev.ki.cli.config
+
+import ai.koog.agents.core.tools.ToolBase
+import dev.ki.agent.tools.ScriptToolLoader
+import dev.ki.agent.tools.builtin.BuiltinTools
+import dev.ki.ai.KiConfig
+import dev.ki.ai.KiLlm
+import dev.ki.cli.store.SqliteSessionStore
+import dev.ki.store.StoreChatHistoryProvider
+import java.nio.file.Path
+import java.util.UUID
+import kotlin.io.path.exists
+import kotlin.io.path.readText
+
+/** Everything a run needs, assembled from CLI args + the `ki.toml` manifest. */
+class KiSession(
+    val llm: KiLlm,
+    val tools: List<ToolBase<*, *>>,
+    val systemPrompt: String,
+    val store: SqliteSessionStore,
+    val historyProvider: StoreChatHistoryProvider,
+    val sessionId: String,
+    val oneShotPrompt: String?,
+)
+
+/**
+ * Resolves the effective configuration (CLI flag > env > manifest > default) and
+ * wires the local, SQLite-backed deployment. The manifest is the tool allowlist:
+ * only listed tools are built; an unlisted tool is simply unavailable.
+ */
+object Bootstrap {
+    fun build(args: CliArgs, baseSystemPrompt: String): KiSession {
+        val manifest = Manifest.load(args.configPath)
+        val root: Path = args.configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath()
+
+        val llm = KiLlm(resolveConfig(args, manifest))
+        val tools = buildTools(manifest, root)
+        val systemPrompt = buildSystemPrompt(baseSystemPrompt, manifest, root)
+
+        val dbPath = root.resolve(args.dbPath ?: manifest.db.path).normalize()
+        val store = SqliteSessionStore(dbPath)
+        val provider = StoreChatHistoryProvider(store)
+        val sessionId = resolveSessionId(args, store)
+
+        return KiSession(llm, tools, systemPrompt, store, provider, sessionId, args.prompt)
+    }
+
+    private fun resolveConfig(args: CliArgs, manifest: Manifest): KiConfig {
+        // Model: CLI > env > manifest > default; a name matching a catalog alias resolves to its id.
+        val requested = args.model ?: System.getenv("KI_MODEL") ?: manifest.llm.model ?: "gpt-4o"
+        val modelId = manifest.models[requested]?.id ?: requested
+
+        val apiKey = manifest.llm.apiKeyEnv?.let { System.getenv(it) }
+            ?: System.getenv("LITELLM_API_KEY")
+            ?: System.getenv("OPENAI_API_KEY")
+            ?: "sk-noauth"
+
+        val baseUrl = System.getenv("LITELLM_BASE_URL") ?: manifest.llm.baseUrl ?: "http://localhost:4000"
+
+        return KiConfig(baseUrl = baseUrl, apiKey = apiKey, defaultModelId = modelId)
+    }
+
+    private fun buildTools(manifest: Manifest, root: Path): List<ToolBase<*, *>> {
+        if (manifest.tools.isEmpty()) return emptyList()
+        val loader by lazy { ScriptToolLoader() }
+        return manifest.tools.map { (name, entry) ->
+            when {
+                entry.script != null -> {
+                    val file = root.resolve(entry.script!!).normalize().toFile()
+                    if (!file.exists()) throw ManifestException(
+                        "Tool '$name' points to a missing script: $file"
+                    )
+                    loader.load(file)
+                }
+                name in BuiltinTools.NAMES -> BuiltinTools.byName(name)!!
+                else -> throw ManifestException(
+                    "Unknown tool '$name': not a builtin (${BuiltinTools.NAMES.joinToString()}) and no script path given."
+                )
+            }
+        }
+    }
+
+    private fun buildSystemPrompt(base: String, manifest: Manifest, root: Path): String {
+        if (manifest.context.files.isEmpty()) return base
+        val sb = StringBuilder(base)
+        for (rel in manifest.context.files) {
+            val file = root.resolve(rel).normalize()
+            if (!file.exists()) throw ManifestException("Context file not found: $file")
+            sb.append("\n\n# ").append(rel).append("\n\n").append(file.readText())
+        }
+        return sb.toString()
+    }
+
+    private fun resolveSessionId(args: CliArgs, store: SqliteSessionStore): String = when {
+        args.resume != null -> args.resume
+        args.continueLatest -> store.listSessions().firstOrNull()?.conversationId ?: UUID.randomUUID().toString()
+        else -> UUID.randomUUID().toString()
+    }
+}

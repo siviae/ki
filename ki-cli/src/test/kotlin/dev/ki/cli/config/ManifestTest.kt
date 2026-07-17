@@ -1,0 +1,61 @@
+package dev.ki.cli.config
+
+import java.nio.file.Files
+import kotlin.io.path.writeText
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+class ManifestTest {
+    private fun manifest(toml: String) = Files.createTempDirectory("ki-mf").resolve("ki.toml")
+        .also { it.writeText(toml) }
+
+    private val sample = """
+        [llm]
+        base_url = "http://proxy:4000"
+        api_key_env = "MY_KEY"
+        model = "fast"
+
+        [db]
+        path = "sess.db"
+
+        [tools.bash]
+
+        [tools.jira]
+        script = "tools/jira.ki.kts"
+        base_url = "https://acme.atlassian.net"
+        token_env = "JIRA_TOKEN"
+
+        [models.fast]
+        id = "gpt-4o-mini"
+        context_window = 64000
+    """.trimIndent()
+
+    @Test fun `parses llm db and models sections`() {
+        val m = Manifest.load(manifest(sample))
+        assertEquals("http://proxy:4000", m.llm.baseUrl)
+        assertEquals("MY_KEY", m.llm.apiKeyEnv)
+        assertEquals("fast", m.llm.model)
+        assertEquals("sess.db", m.db.path)
+        assertEquals("gpt-4o-mini", m.models["fast"]?.id)
+        assertEquals(64000, m.models["fast"]?.contextWindow)
+    }
+
+    @Test fun `builtin entry has no script and tool config lands in settings`() {
+        val m = Manifest.load(manifest(sample))
+        assertNull(m.tools["bash"]?.script)
+        val jira = m.tools["jira"]!!
+        assertEquals("tools/jira.ki.kts", jira.script)
+        assertEquals("https://acme.atlassian.net", jira.settings["base_url"])
+        assertEquals("JIRA_TOKEN", jira.settings["token_env"])
+    }
+
+    @Test fun `missing manifest is a clear error`() {
+        val e = assertFailsWith<ManifestException> {
+            Manifest.load(Files.createTempDirectory("ki-none").resolve("ki.toml"))
+        }
+        assertTrue(e.message!!.contains("No ki.toml"), e.message)
+    }
+}

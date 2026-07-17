@@ -1,0 +1,32 @@
+# ki.toml — the ki CLI manifest: an explicit allowlist of the tools the agent may
+# use, plus LLM / storage / context configuration. This is the default config
+# (`./ki.toml`); point elsewhere with `ki --config <path>`. Nothing auto-loads —
+# a tool is available only if it is listed below.
+
+[llm]
+# model / base_url may also come from the environment. Precedence:
+# CLI flag > env (KI_MODEL, LITELLM_BASE_URL) > this file > default.
+model = "gpt-4o"
+# api_key_env names the env var holding the key — a secret by reference, never
+# inlined into this (committable) file. Falls back to LITELLM_API_KEY / OPENAI_API_KEY.
+api_key_env = "LITELLM_API_KEY"
+
+[db]
+# Local, lightweight deployment: an embedded SQLite file. No server, no Spring.
+path = ".ki/ki.db"
+
+[context]
+# Instruction files prepended to the system prompt, in order (e.g. ["KI.md"]).
+files = []
+
+# --- tools -----------------------------------------------------------------------
+# Builtins are enabled by listing them by name (no script). Script tools set a
+# `script` path (relative to this manifest) and may carry their own config keys.
+[tools.bash]
+[tools.read]
+[tools.write]
+[tools.edit]
+[tools.ls]
+
+[tools.grep]
+script = "tools/grep.ki.kts"
