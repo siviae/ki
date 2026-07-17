@@ -1,6 +1,7 @@
 package dev.ki.cli.config
 
 import ai.koog.agents.core.tools.ToolBase
+import dev.ki.agent.context.UsageAccumulator
 import dev.ki.agent.tools.ScriptToolLoader
 import dev.ki.agent.tools.builtin.BuiltinTools
 import dev.ki.ai.KiConfig
@@ -21,6 +22,12 @@ class KiSession(
     val historyProvider: StoreChatHistoryProvider,
     val sessionId: String,
     val oneShotPrompt: String?,
+    /** Effective config (base for a `/model` rebuild). */
+    val config: KiConfig,
+    /** Model catalog (alias → metadata) for `/model <name>`. */
+    val models: Map<String, ModelEntry>,
+    /** Cumulative token usage, shared across `/model` rebuilds. */
+    val usageMeter: UsageAccumulator,
 )
 
 /**
@@ -33,7 +40,8 @@ object Bootstrap {
         val manifest = Manifest.load(args.configPath)
         val root: Path = args.configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath()
 
-        val llm = KiLlm(resolveConfig(args, manifest))
+        val config = resolveConfig(args, manifest)
+        val llm = KiLlm(config)
         val tools = buildTools(manifest, root)
         val systemPrompt = buildSystemPrompt(baseSystemPrompt, manifest, root)
 
@@ -42,7 +50,10 @@ object Bootstrap {
         val provider = StoreChatHistoryProvider(store)
         val sessionId = resolveSessionId(args, store)
 
-        return KiSession(llm, tools, systemPrompt, store, provider, sessionId, args.prompt)
+        return KiSession(
+            llm, tools, systemPrompt, store, provider, sessionId, args.prompt,
+            config = config, models = manifest.models, usageMeter = UsageAccumulator(),
+        )
     }
 
     private fun resolveConfig(args: CliArgs, manifest: Manifest): KiConfig {

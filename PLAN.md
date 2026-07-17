@@ -41,7 +41,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M4 | Config, model catalog, sessions & context | ✅ Done |
 | M5 | Tool permissions & approval | ▢ Planned |
 | M6 | Context & token management | ✅ Done |
-| M7 | TUI: slash commands, cancel, cost | ▢ Planned |
+| M7 | TUI: slash commands, cancel, cost | ✅ Done (streaming deferred) |
 | M8 | Robustness: retries, errors, logging | ▢ Planned |
 | M9 | Packaging & distribution | ▢ Planned |
 
@@ -593,9 +593,49 @@ persists the compacted prompt).
 
 ---
 
-## M7 — TUI polish: slash commands, cancel, cost
+## M7 — TUI polish: slash commands, cancel, cost  ✅ DONE (core; streaming/scrollback deferred)
 
 **Goal:** make the CLI pleasant and interruptible.
+
+### Delivered (as built — authoritative)
+
+- **Slash commands** — pure, testable `SlashCommands.dispatch(input, ctx): SlashAction`
+  dispatched before a line reaches the agent: `/help`, `/model [name]`, `/tools`,
+  `/config`, `/resume`, `/clear`, `/quit` (+ aliases `/q`, `/h`). Case-insensitive.
+  Unknown `/x` reported, not sent to the LLM. `/config` never prints the API key.
+- **`KiController`** (new) — owns live session state and implements `SlashContext`.
+  `/model <name>` **rebuilds** the `KiAgent` against the new model while keeping the
+  same `sessionId`, history provider, and usage accumulator, so **history (M4) and the
+  running cost total survive the switch**. `/resume` is show-hint only (live re-seed
+  deferred — restart with `--resume`/`--continue`).
+- **Cancellation** — `AgentBridge` tracks the per-turn `Job`; Esc / Ctrl-C cancel an
+  in-flight turn (Ctrl-C also quits when idle; Ctrl-Q always quits). Fixed a real bug:
+  the old `catch (Throwable)` swallowed `CancellationException` and posted a spurious
+  error — now rethrown; cancel runs UI cleanup itself (`onCancelled`) since the result
+  callback won't fire on a dead coroutine. The store stays clean (koog's
+  `interceptStrategyCompleted` never fires on cancel).
+- **Status line** — model · context usage (`~tokens/window (pct%)`, from M6) · running
+  cost (`$0.0000`) · current tool. Running cost = `Pricing` (small local per-1M-token
+  table, labeled an estimate; unknown model ⇒ cost omitted, not faked) over the shared
+  `UsageAccumulator` (cumulative input/output tokens captured in
+  `EventHandler.onLLMCallCompleted`). Current tool via `onToolCallStarting/Completed`.
+
+**Verified:** `./gradlew build` green, 152 tests. New: `SlashCommandsTest` (dispatch
+matrix), `AgentBridgeTest` cancel cases (result callback does **not** fire on cancel;
+no-op when idle), `PricingTest`, `KiControllerTest` (model switch rebuilds + keeps
+tools; `/config` omits the key). Existing `AgentBridgeTest` marshaling tests still
+green (change was additive).
+
+**Deferred (called out, not buried):**
+- **Live token streaming** into the transcript — needs a *streaming* strategy node that
+  must also carry the tool loop **and** the M6 compression, which would re-open the
+  chat-memory/compression coexistence just settled. A focused pass on its own; the
+  transcript updates per-turn today.
+- **Scrollback** — `Tui` auto-scrolls to the bottom with no user-scroll API yet; needs
+  a small ki-tui viewport-offset addition + PageUp/PageDown binding.
+- **Autocomplete / fuzzy** for slash commands & file paths (polish on top of dispatch).
+
+<details><summary>Original M7 plan (kept for the record)</summary>
 
 **Modules:** ki-cli, ki-tui.
 
@@ -613,6 +653,8 @@ persists the compacted prompt).
 **Acceptance**
 - Ctrl-C (or bound key) stops generation, returns to prompt, history intact.
 - `/model <name>` switches mid-session; `/tools` lists loaded builtins + scripts.
+
+</details>
 
 ---
 

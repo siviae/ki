@@ -1,6 +1,5 @@
 package dev.ki.cli
 
-import dev.ki.agent.KiAgent
 import dev.ki.cli.config.Bootstrap
 import dev.ki.cli.config.CliArgs
 import dev.ki.cli.config.ManifestException
@@ -26,23 +25,17 @@ fun main(argv: Array<String>) {
         exitProcess(2)
     }
 
-    val agent = KiAgent(
-        llm = session.llm,
-        systemPrompt = session.systemPrompt,
-        tools = session.tools,
-        historyProvider = session.historyProvider,
-    )
-    val runner: suspend (String) -> String = { input -> agent.run(input, session.sessionId) }
+    val controller = KiController(session)
 
     session.store.use {
         // One-shot mode: run a single prompt, print the reply, exit.
         session.oneShotPrompt?.let { prompt ->
-            println(runBlocking { runner(prompt) })
+            println(runBlocking { controller.run(prompt) })
             return
         }
 
         val tui = Tui(ProcessTerminal())
-        KiScreen(tui, runner, usage = { agent.lastUsage })
+        KiScreen(tui, controller)
         tui.start()
         tui.awaitStop()
     }

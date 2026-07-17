@@ -15,6 +15,7 @@ import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.message.Message
 import dev.ki.agent.context.ContextUsage
 import dev.ki.agent.context.KiTokenizer
+import dev.ki.agent.context.UsageAccumulator
 import dev.ki.ai.KiLlm
 
 /**
@@ -42,14 +43,26 @@ class KiAgent(
     private val compressHistory: Boolean = true,
     keepLastMessages: Int = 20,
     contextBudgetRatio: Double = 0.7,
+    private val usageMeter: UsageAccumulator? = null,
 ) {
     private val tokenizer = KiTokenizer()
     private val window: Long = llm.defaultModel.contextWindow
     private val budgetTokens: Long = maxOf(MIN_BUDGET, (window * contextBudgetRatio).toLong())
 
+    /** The model id this agent talks to (for status / `/model`). */
+    val modelId: String = llm.defaultModel.id
+
+    /** Names of the registered tools (for `/tools`). */
+    val toolNames: List<String> = tools.map { it.descriptor.name }
+
     /** Context usage from the most recent completed LLM call, or null before the first. */
     @Volatile
     var lastUsage: ContextUsage? = null
+        private set
+
+    /** Tool currently executing (for the status line), or null when idle. */
+    @Volatile
+    var currentTool: String? = null
         private set
 
     private val registry: ToolRegistry = ToolRegistry { tools(tools) }
@@ -69,6 +82,7 @@ class KiAgent(
         val reported = meta?.totalTokensCount ?: meta?.inputTokensCount
         lastUsage = if (reported != null) ContextUsage(reported, window, reported = true)
         else ContextUsage(tokenizer.estimate(prompt), window, reported = false)
+        usageMeter?.record(meta?.inputTokensCount, meta?.outputTokensCount)
     }
 
     private val agent: AIAgent<String, String> = AIAgent(
@@ -89,6 +103,9 @@ class KiAgent(
             }
             install(EventHandler) {
                 onLLMCallCompleted { ctx -> updateUsage(ctx.prompt, ctx.response) }
+                onToolCallStarting { ctx -> currentTool = ctx.toolName }
+                onToolCallCompleted { currentTool = null }
+                onToolCallFailed { currentTool = null }
             }
         },
     )

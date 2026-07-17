@@ -1,5 +1,6 @@
 package dev.ki.cli.ui
 
+import dev.ki.cli.KiController
 import dev.ki.tui.Ansi
 import dev.ki.tui.Component
 import dev.ki.tui.Container
@@ -15,22 +16,21 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 
 /**
- * The pi-style coding-agent UI, now on our own [Tui]: an inline, scrollback-
- * friendly transcript (grows downward) with a fixed prompt editor and status line
- * pinned at the bottom. The differential renderer only repaints the changed rows,
- * so streaming updates and edits don't flicker. Casciian is gone.
+ * The pi-style coding-agent UI, on our own [Tui]: an inline, scrollback-friendly
+ * transcript with a fixed prompt editor and a status line. Slash commands are
+ * dispatched before a line reaches the agent; an in-flight turn is cancellable
+ * (Esc / Ctrl-C); the status line shows model, context usage, running cost, and the
+ * currently executing tool.
  */
 class KiScreen(
     private val tui: Tui,
-    runner: suspend (String) -> String,
-    /** Optional: latest context usage, rendered into the status line after each turn. */
-    private val usage: () -> dev.ki.agent.context.ContextUsage? = { null },
+    private val controller: KiController,
 ) {
     private val transcript = Container()
     private val editor = Editor()
-    private val status = StatusLine("ki • ready — Enter to send, Ctrl-Q to quit")
+    private val status = StatusLine("")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val bridge = AgentBridge(scope, tui::post, runner)
+    private val bridge = AgentBridge(scope, tui::post, controller::run)
     private var busy = false
 
     init {
@@ -43,44 +43,77 @@ class KiScreen(
         editor.onChange = { tui.requestRender() }
         editor.onSubmit = { onSubmit(it) }
 
-        // Raw mode swallows SIGINT; intercept Ctrl-C / Ctrl-Q to quit cleanly.
+        // Raw mode swallows signals; drive quit/cancel from keys.
         tui.addInputListener { data ->
-            if (Keys.matchesKey(data, Key.CTRL_C) || Keys.matchesKey(data, Key.CTRL_Q)) {
-                tui.stop(); true
-            } else {
-                false
+            when {
+                Keys.matchesKey(data, Key.CTRL_Q) -> { tui.stop(); true }
+                Keys.matchesKey(data, Key.CTRL_C) -> { if (busy) cancel() else tui.stop(); true }
+                Keys.matchesKey(data, Key.ESCAPE) && busy -> { cancel(); true }
+                else -> false
             }
         }
 
-        appendLine("Welcome to ki. Type a prompt and press Enter.")
+        status.set(idleStatus())
+        appendLine("Welcome to ki. Type a prompt, or /help for commands.")
     }
 
     private fun onSubmit(text: String) {
         if (busy) return
         editor.clear()
-        appendLine("› $text")
+        if (text.isBlank()) return
+
+        when (val action = SlashCommands.dispatch(text, controller)) {
+            is SlashAction.NotACommand -> { runTurn(action.text); return }
+            is SlashAction.Show -> { echo(text); appendLine(action.text) }
+            is SlashAction.Clear -> { transcript.clear() }
+            is SlashAction.Quit -> { tui.stop(); return }
+            is SlashAction.SwitchModel -> { echo(text); appendLine(controller.switchModel(action.name)); status.set(idleStatus()) }
+            is SlashAction.Unknown -> { echo(text); appendLine("Unknown command /${action.name}. Try /help.") }
+        }
+        tui.requestRender()
+    }
+
+    private fun runTurn(text: String) {
+        echo(text)
         busy = true
-        status.set("ki • thinking…")
+        status.set("ki • thinking… (Esc to cancel)")
         tui.requestRender()
         bridge.submit(text) { result ->
             appendLine(result)
             busy = false
-            status.set("ki • ready" + usageSuffix())
+            status.set(idleStatus())
             tui.requestRender()
         }
     }
 
-    /** " — 1.2k/128k tok (1%)" from the latest usage, or "" if none yet. */
-    private fun usageSuffix(): String {
-        val u = usage() ?: return ""
-        val mark = if (u.reported) "" else "~"
-        return " — $mark${u.tokens}/${u.window} tok (${u.percent}%)"
+    private fun cancel() {
+        bridge.cancel {
+            appendLine("⨯ cancelled")
+            busy = false
+            status.set(idleStatus())
+            tui.requestRender()
+        }
     }
+
+    private fun echo(text: String) = appendLine("› $text")
 
     /** Append a transcript entry (may contain newlines). Runs on the UI thread. */
     fun appendLine(s: String) {
         transcript.add(Text(s))
         tui.requestRender()
+    }
+
+    /** "ki • gpt-4o · 1.2k/128k (1%) · $0.0021 · bash" — pieces present only when known. */
+    private fun idleStatus(): String {
+        val parts = ArrayList<String>()
+        parts.add("ki • ${controller.model()}")
+        controller.usage()?.let { u ->
+            val mark = if (u.reported) "" else "~"
+            parts.add("$mark${u.tokens}/${u.window} (${u.percent}%)")
+        }
+        controller.costUsd()?.let { parts.add("$" + String.format("%.4f", it)) }
+        controller.currentTool()?.let { parts.add(it) }
+        return parts.joinToString(" · ")
     }
 }
 
