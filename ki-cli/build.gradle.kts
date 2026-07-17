@@ -21,8 +21,14 @@ dependencies {
     implementation(libs.jackson.module.kotlin)
     implementation(libs.jackson.dataformat.toml)
 
+    // Structured logging → .ki/logs/: kotlin-logging facade + logback backend.
+    implementation(libs.kotlin.logging)
+    runtimeOnly(libs.logback.classic)
+
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.core)
+    // Drive a fresh logback context in tests to validate the shipped logback.xml.
+    testImplementation(libs.logback.classic)
 }
 
 application {

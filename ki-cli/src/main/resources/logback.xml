@@ -1,0 +1,23 @@
+<configuration>
+    <!--
+      ki logs to a file, never the console: the interactive TUI owns the terminal,
+      so a stray log line would corrupt the screen. The directory and root level are
+      supplied by dev.ki.cli.Logging via system properties before logback starts.
+    -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${KI_LOG_DIR:-.ki/logs}/ki.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${KI_LOG_DIR:-.ki/logs}/ki.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>10MB</maxFileSize>
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>100MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{32} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="${KI_LOG_LEVEL:-WARN}">
+        <appender-ref ref="FILE"/>
+    </root>
+</configuration>

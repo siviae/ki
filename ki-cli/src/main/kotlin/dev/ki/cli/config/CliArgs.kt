@@ -16,6 +16,10 @@ data class CliArgs(
     val continueLatest: Boolean = false,
     /** One-shot prompt; when null the CLI runs interactively. */
     val prompt: String? = null,
+    /** INFO-level logging to `.ki/logs/`. */
+    val verbose: Boolean = false,
+    /** DEBUG-level logging to `.ki/logs/`. */
+    val debug: Boolean = false,
 ) {
     companion object {
         fun parse(argv: Array<String>): CliArgs {
@@ -33,6 +37,8 @@ data class CliArgs(
                     "--db" -> args = args.copy(dbPath = next(a))
                     "--resume", "-r" -> args = args.copy(resume = next(a))
                     "--continue" -> args = args.copy(continueLatest = true)
+                    "--verbose", "-v" -> args = args.copy(verbose = true)
+                    "--debug" -> args = args.copy(debug = true)
                     else -> rest.add(a)
                 }
                 i++

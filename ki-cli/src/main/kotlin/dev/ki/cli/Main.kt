@@ -6,8 +6,11 @@ import dev.ki.cli.config.ManifestException
 import dev.ki.cli.ui.KiScreen
 import dev.ki.tui.ProcessTerminal
 import dev.ki.tui.Tui
+import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.runBlocking
 import kotlin.system.exitProcess
+
+private val log = KotlinLogging.logger {}
 
 private val SYSTEM_PROMPT = """
     You are ki, a terse coding agent. Use the provided tools to work in the repo:
@@ -17,6 +20,8 @@ private val SYSTEM_PROMPT = """
 
 fun main(argv: Array<String>) {
     val args = CliArgs.parse(argv)
+    // Must precede any logger use so logback picks up level + dir on first init.
+    Logging.configure(args, args.dbPath)
 
     val session = try {
         Bootstrap.build(args, SYSTEM_PROMPT)
@@ -24,6 +29,7 @@ fun main(argv: Array<String>) {
         System.err.println("ki: ${e.message}")
         exitProcess(2)
     }
+    log.info { "ki session ${session.sessionId} started (model=${session.config.defaultModelId}, oneShot=${session.oneShotPrompt != null})" }
 
     val controller = KiController(session)
 

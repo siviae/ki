@@ -8,6 +8,8 @@ nuprocess = "3.0.0" # 4.0.0 targets Java 25 bytecode; 3.0.0 (Java 7) works on JD
 sqlite = "3.47.1.0"
 jackson = "2.18.2" # prod serializer: our own config/manifest/catalog types (not koog Message)
 spring = "6.2.1" # spring-jdbc/context for the optional ki-store-spring module only
+kotlinLogging = "8.0.01" # matches koog's transitive version; slf4j-2 facade
+logback = "1.5.12" # slf4j-2 backend; ki-cli only (the app owns the log sink)
 
 [libraries]
 koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
@@ -29,6 +31,10 @@ jackson-dataformat-toml = { module = "com.fasterxml.jackson.dataformat:jackson-d
 # Spring — remote session store reference impl (ki-store-spring only)
 spring-jdbc = { module = "org.springframework:spring-jdbc", version.ref = "spring" }
 spring-context = { module = "org.springframework:spring-context", version.ref = "spring" }
+
+# Logging — kotlin-logging facade (all modules) + logback backend (ki-cli sink)
+kotlin-logging = { module = "io.github.oshai:kotlin-logging-jvm", version.ref = "kotlinLogging" }
+logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 
 # Kotlin scripting host (compile .kts tool scripts on startup)
 kotlin-scripting-common = { module = "org.jetbrains.kotlin:kotlin-scripting-common", version.ref = "kotlin" }
