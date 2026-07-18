@@ -45,7 +45,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M8 | Robustness: retry, tool-errors, process-kill, logging | ✅ Done (checkpoints split to M9) |
 | M9 | Persistence: checkpoints, crash recovery & resume | ✅ Done |
 | M10 | Distributed multi-node ki (Spring/Postgres) | ◐ Coordination primitives done; failover loop left |
-| M11 | RocketChat bot reference implementation | ▢ Planned |
+| M11 | RocketChat bot reference implementation | ◐ Designed (verified surface); build pending M10 loop |
 | M12 | Packaging & distribution | ▢ Planned (was M9) |
 | M13 | Live streaming & interactive TUI | ▢ Planned (was M10) |
 | M14 | Tool suite completion | ▢ Planned (was M11) |
@@ -741,8 +741,8 @@ hint-only.)* **This milestone is the local/single-node foundation the distribute
 builds on** — the checkpoint SPI it lands is exactly what M10 fails over across nodes.
 
 **Modules:** ki-agent (install `Persistence`, checkpoint SPI seam), ki-cli
-(SQLite checkpoint store + `/resume` re-seed), ki-store-spring (JdbcTemplate checkpoint
-store), build.
+(SQLite checkpoint store + `/resume` re-seed), ki-cluster (JdbcTemplate checkpoint
+store; renamed from ki-store-spring during M10 prep), build.
 
 ### Delivered (checkpoint spine — as built)
 
@@ -759,7 +759,7 @@ store), build.
 - **`SqliteCheckpointStore`** (ki-cli) over the **same** SQLite connection as
   `SqliteSessionStore` (shared write monitor + `busy_timeout=5000` — a 2nd connection
   would contend, since checkpoints write per node); **`JdbcTemplateCheckpointStore`** +
-  bean (ki-store-spring). `[db].checkpoints = true` opts in via the manifest.
+  bean (ki-cluster). `[db].checkpoints = true` opts in via the manifest.
 - **Verified:** `CheckpointRecoveryTest` — **two agent instances** sharing one store +
   session id (offline stand-in for kill-and-restart, and the M10 takeover primitive):
   instance A calls a tool then crashes; instance B resumes and finishes; asserts the
@@ -883,18 +883,47 @@ exposes interfaces, the Postgres module implements them — same SPI discipline 
   succeeds — and **steering drain-once-in-order** (second drain sees rows consumed, other
   sessions untouched). Self-skips without `KI_IT`+Docker. `./gradlew build` green.
 
-**Still open (the larger half): the failover orchestration loop** — the glue that, per node,
-claims sessions, resumes an owned session from its latest M9 checkpoint, drains steering into
-the running `KiAgent` at step boundaries (via `runFromCheckpoint`), and releases on
-completion. Plus the two-node crash-takeover IT and the LISTEN/NOTIFY optimization. This is
-where the RocketChat (M11) use-case shapes the exact loop.
+### Still open (the larger half): the orchestration loop — contract (shaped by M11)
+
+Designing M11 fixed the loop's shape. The contract, per node:
+
+- **Ownership is per *turn*, not per session** *(user decision — Fork A over the earlier
+  "same node" wording)*. A node holds the advisory lock only while a turn runs; between turns
+  no lock is held and no connection is pinned. The next turn may land on a different node —
+  invisible to correctness because checkpoint + history make the session portable, and it
+  scales to many idle conversations (the chat-bot shape). Mid-turn messages route to the node
+  holding the lock, which is exactly when the lock is held.
+- **`SteeringInbox` is the per-session message queue for every post-first message** — not a
+  separate "next-turn dispatch." Whether a drained message is consumed as *next turn* (session
+  idle) or *mid-run steering* (session running) is only a question of **when** the owner drains.
+- **Normal idle continuation is a plain `agent.run(nextInput, sessionId)`** — ChatMemory
+  reloads history; the prior turn completed so Persistence sees a **tombstone → no rollback**.
+  `runFromCheckpoint(input, checkpoint)` is **only** the interrupted-turn / failover path, not
+  the normal path. Don't route normal turns through it.
+- **The sweeper is the backbone, the webhook the fast path.** One periodic sweep:
+  `SELECT session_id FROM inbox-with-unconsumed-work WHERE not-currently-owned ... FOR UPDATE
+  SKIP LOCKED`, up to the node's concurrency cap → `tryClaim` (the atomic arbiter — no separate
+  is-owned check, which races) → drain + run → release. This single loop is simultaneously
+  **dead-owner failover**, **lost-wakeup recovery** (message lands in the gap between drain and
+  release), and **unclaimed-new-work distribution**. LISTEN/NOTIFY only accelerates it.
+- **Consume-ordering is at-least-once, reconciled with checkpoints.** A steering/inbox row is
+  marked **consumed only after the turn completes** (or after the first checkpoint captures the
+  message into history) — never at drain time. Otherwise a mid-turn crash consumes the message
+  *and* loses it from every checkpoint. On takeover the checkpoint already carries it → the
+  message replays at least once (same idempotency caveat as tool side effects, Decision B).
+- **Deferred to v2: true mid-run interruption** (inject input while `agent.run` is in flight) —
+  needs a custom koog strategy node or cancel + `runFromCheckpoint`. v1 is turn-based: steering
+  is drained at the turn boundary. The Q&A-bot use-case doesn't need mid-run interruption.
+
+Remaining to build: this loop (a `SessionWorker`/sweeper in ki-cluster), the two-node kill-9
+takeover IT, and the LISTEN/NOTIFY optimization.
 
 ### Decision A — coordination via **session-level** advisory locks (not xact locks)
 
 The user's constraint "avoid long-running transactions" is load-bearing. Use
 **`pg_try_advisory_lock(session_key)`** on a **dedicated connection in autocommit**, held
-for the lifetime of session ownership — **not** `pg_advisory_xact_lock`, which would
-require an open transaction for the whole session = exactly the long transaction to
+**for the duration of a turn** (per-turn ownership, Fork A) — **not** `pg_advisory_xact_lock`,
+which would require an open transaction for the whole turn = exactly the long transaction to
 avoid. Session-level locks give both things needed:
 - **single-owner mutual exclusion** — only one node holds a session's lock at a time;
 - **automatic release on crash** — when the owning node's connection drops, Postgres
@@ -906,10 +935,11 @@ short transactions** while the lock is held. The lock guards ownership; it never
 model call or a tool run.
 
 **Pooling tension (state it, don't hide it):** a session-level advisory lock **pins its
-connection** — you cannot return that connection to Hikari while the lock is held. So
-owning N concurrent sessions needs N dedicated connections (a small dedicated
-ownership-pool, separate from the app's main pool). This **bounds sessions-per-node** and
-is a real capacity knob, not a bug.
+connection** while held — you can't return it to Hikari mid-turn. With per-turn ownership
+(Fork A) this pins one connection per **actively running** turn (not per idle conversation),
+so the bound is **concurrent turns per node** — a real capacity knob, and far cheaper than
+pinning every live conversation. Size the dedicated ownership pool to the node's concurrency
+cap, separate from the app's main pool.
 
 ### Decision B — failover replays from the last checkpoint (at-least-once)
 
@@ -921,102 +951,114 @@ Tune checkpoint frequency (checkpoint after each tool node) to shrink the replay
 document tool idempotency as the residual risk. Optionally: a "checkpoint-before-side-
 effecting-tool" hook to make the replay window a no-op for already-applied writes.
 
-### Decision C — steering via a DB inbox, applied at step boundaries
+### Decision C — steering via a DB inbox, drained at turn boundaries
 
-- **Any node writes** a steering row: `ki_steering(session_id, seq, payload,
-  consumed_at)`. The **owning node** polls (baseline) its own sessions' unconsumed
-  steering rows and, at the **next node/step boundary**, feeds the payload into the run
-  via `runFromCheckpoint(session, input=steering, checkpoint)` (the M9 seam), marking the
-  row consumed in a short transaction.
-- **Optimization (optional):** Postgres **LISTEN/NOTIFY** to signal "new steering for
-  session X" instead of polling — but as a **signal, not a payload** (NOTIFY has size
-  limits and no durability), on its **own dedicated connection**. The DB row remains the
-  source of truth.
-- **Honest boundary:** steering applies at the **next step boundary**, not mid-token /
-  mid-tool. koog has no seam to inject input into an already-running node.
+- **Any node writes** a steering row: `ki_steering(session_id, seq, payload, consumed_at)`
+  (built, verified). This inbox is the per-session message queue: a mid-session user
+  follow-up and a RocketChat thread continuation are both just a steering write.
+- **The node that runs the turn drains it.** For an **idle** session the drained payload is
+  the next turn's input to a plain `agent.run(input, sessionId)`; for a **running** session
+  it is applied at the next step boundary. Rows are marked consumed **only after the turn
+  completes** (the reconciled at-least-once ordering above), never at drain time.
+- **Optimization (optional):** Postgres **LISTEN/NOTIFY** to signal "new work for session X"
+  instead of polling — a **signal, not a payload** (NOTIFY has size limits and no durability),
+  on its **own dedicated connection**. The DB row stays the source of truth; the sweeper is
+  the durable backstop, so a missed NOTIFY only adds latency, never loss.
+- **Honest boundary:** in v1, steering applies at the **turn boundary**, not mid-token /
+  mid-tool. True mid-run injection is deferred to v2 (see loop contract above).
 
 **Deliverables**
-- `SessionOwnership` seam in ki-agent (claim / renew / release / is-owner), Postgres
-  advisory-lock impl in the Spring module over a dedicated ownership connection.
-- Failover: unowned sessions with pending work are **claimable**; on claim, resume from
-  the latest checkpoint. A scan/poll (or NOTIFY) finds work whose owner died.
-- `SteeringInbox` seam (write from any node; drain for owned sessions), Postgres impl
-  (short-tx insert + `... consumed_at IS NULL` drain), applied via the M9 checkpoint-run
-  seam at step boundaries.
-- All coordination in the Spring-side module; **CLI classpath stays spring/postgres-free**.
+- ✅ `SessionOwnership` seam (ki-agent) + `AdvisoryLockSessionOwnership` (ki-cluster,
+  per-turn advisory lock on a dedicated connection). *(done, Postgres-verified)*
+- ✅ `SteeringInbox` seam + `JdbcSteeringInbox` (atomic `UPDATE … RETURNING` drain). *(done)*
+- ▢ **`SessionWorker` / sweeper loop** (ki-cluster): the per-node backbone above —
+  `SKIP LOCKED` pull under a concurrency cap → `tryClaim` → drain → `agent.run` (or
+  `runFromCheckpoint` on takeover) → mark-consumed-then-release. Handles new work, failover,
+  and lost wakeups in one loop.
+- ▢ LISTEN/NOTIFY accelerator (optional, on a dedicated connection).
+- All coordination in `ki-cluster`; **CLI classpath stays spring/postgres-free**.
 
 **Acceptance**
-- Two nodes, one Postgres: start a long session on node A, `kill -9` node A mid-run, node
-  B **detects the released lock, claims the session, and completes it** from the last
-  checkpoint (integration test, Testcontainers Postgres, behind `KI_IT`).
-- A steering row written **via node B** for a session owned by **node A** is picked up and
-  reaches the model on node A at the next step boundary.
-- No long-running transaction: assert coordination uses session-level advisory locks +
-  short write transactions (no open tx spans a model call).
+- Two nodes, one Postgres: a turn running on node A, `kill -9` node A mid-turn; node B's
+  sweeper **claims the released session and completes the turn** from the last checkpoint
+  (Testcontainers IT behind `KI_IT`). *(The primitive — auto-release + `tryClaim` takeover —
+  is already Postgres-verified; this exercises it through the full loop.)*
+- A steering/inbox row written **via node B** for a session later run by **any** node is
+  drained and reaches the model, exactly-once-or-more, marked consumed only after the turn.
+- No long-running transaction: coordination uses per-turn advisory locks + short write
+  transactions (no open tx spans a model call). *(verified for the primitives)*
 - `:ki-cli:dependencies` still shows **no spring, no postgres** (module-boundary gate).
 
 ---
 
 ## M11 — RocketChat bot reference implementation
 
-**Goal:** a reference **RocketChat bot** that lets a user talk to a distributed ki
-deployment (M10) from a RocketChat thread — the bot receives a user message, runs it
-through an agent, and posts the answer back. **A new thread starts a new session; further
-messages in that thread are steering into the existing session.** *(Reference impl per
-the user's real use case; a later pass builds it out.)*
+**Goal:** a reference **RocketChat bot** over the distributed M10 layer — a user talks to
+ki in a RocketChat thread, any node can receive the HTTP delivery, and the M10 loop runs the
+turn and posts the answer back. This is the **real consumer that shaped M10's loop contract**:
+a first message starts a session, every later message in the thread is an M10 steering write.
 
-**Modules:** a new bot module (Spring, depends on `ki-store-spring` + M10 `ki-cluster`);
-no change to ki-agent/ki-cli seams.
+**Module:** new `ki-rocketchat` (Spring web; depends on `ki-cluster` + ki-agent). ki-agent/
+ki-cli seams unchanged; the CLI stays spring/postgres-free (module-boundary gate holds).
 
-### The delivery question, answered straight
+### RocketChat surface (verified July 2026)
 
-The user asked whether "each node runs its own bot instance, and the node that receives a
-message starts the session." **It depends on the RocketChat ingestion mode, and the clean
-answer is to decouple ingestion from processing regardless:**
-- **Outgoing webhook behind a load balancer** — RocketChat POSTs each new message to one
-  URL; the LB routes it to **one** node. This matches "receiving node handles it" cleanly
-  and is the recommended ingestion path. *(Verify the webhook payload carries the thread
-  id — `tmid` — so continuations can be routed as steering.)*
-- **Realtime / bot-user WebSocket** — if N nodes all connect as the **same bot user**,
-  RocketChat **broadcasts every message to all subscribers** → N-fold duplicate
-  processing. So this mode *requires* a DB claim step anyway. **Don't** rely on
-  "receiving node = owner" here.
+- **Ingestion = outgoing webhook behind a load balancer.** RocketChat POSTs each new message
+  to one URL; the LB lands it on **one** node. Documented payload fields: `token`,
+  `channel_id`, `channel_name`, `timestamp`, `user_id`, `user_name`, `text`, plus the message
+  `_id` and, **when the message is in a thread, `tmid`** (thread-root message id — confirmed;
+  RocketChat PR #17863 / docs). Realtime/bot-user WebSocket is rejected: N nodes on the same
+  bot user each receive a **broadcast** of every message → N-fold duplicate processing.
+- **Reply = REST `chat.postMessage`** with `roomId` + `text` + **`tmid`** to post *into the
+  thread* (confirmed: `tmid` = "message id to reply to / create a thread on").
+- **Echo-loop guard = `user_id` filter.** The bot's own replies re-fire the webhook; drop any
+  message whose `user_id` equals the bot's own user id. *(A `bot` field on bot-authored
+  messages is plausible but was **not** verifiable in the docs — do not rely on it; the
+  `user_id` check is the robust guard.)* Also validate the shared `token`.
 
-Either way, **decouple**: ingestion writes the incoming message to a Postgres **inbox**;
-processing is pulled from the DB. This unifies with M10 and removes the ingestion-mode
-dependency.
+### Thread ↔ session mapping (the key detail)
 
-### Decision — new thread = fair pull; continuation = steering (reuse M10)
+A brand-new top-level message has **no `tmid`**; its `_id` becomes the thread root once the
+bot replies with `tmid = _id`. Follow-ups then carry `tmid = root`. So **the thread root id
+is the stable session key**:
+- **No `tmid`** → new session; record `thread_root = message._id`; the turn's reply posts with
+  `tmid = message._id` (opening the thread).
+- **`tmid = T` present** → look up the session whose `thread_root = T`; it's a continuation.
+  (Unmapped `T` — a user replying under some other message — starts a new session keyed by `T`.)
 
-- **New thread (no `tmid`)** → insert an inbox row; **any node** pulls it under its
-  concurrency cap via `SELECT … FOR UPDATE SKIP LOCKED` in a short transaction. That
-  **is** the "least-busy" fair queue — a node at capacity simply doesn't pull, so work
-  flows to nodes with spare slots. **Do not build a global least-busy balancer**;
-  `SKIP LOCKED` + per-node cap is the right primitive and premature to over-engineer.
-  The pulling node claims the session (M10 `SessionOwnership`) and starts the run.
-- **Continuation (has `tmid` of an existing session)** → **this is an M10 steering
-  message.** Write it to the steering inbox keyed by the session that owns the thread; the
-  node currently working that session drains and applies it at the next step boundary
-  (M10 Decision C). No separate mechanism.
-- **Reply** posted back to the thread by the node that produced it (via RocketChat REST).
+### The flow (all decoupled through Postgres — receiving node ≠ processing node)
 
-This makes M11 mostly **glue over M10** — thread↔session mapping, RocketChat REST in/out,
-and the inbox pull loop — confirming the dependency: **M11 needs M10**.
+1. **Webhook controller** (any node): validate token, drop self/echo (`user_id`), resolve
+   `thread_root`, then **write to Postgres first, claim never here**:
+   - new session → insert its first message as inbox work + upsert `rocketchat_thread`
+     (`thread_root` ⇄ `session_id` ⇄ `room_id`);
+   - continuation → `SteeringInbox.write(session_id, text)` (M10) — the per-session queue.
+2. **M10 sweeper** (any node, the backbone): `SKIP LOCKED` pull under the concurrency cap →
+   `tryClaim(session)` (atomic arbiter) → **drain the session's inbox/steering** → run the
+   turn (`agent.run` idle, `runFromCheckpoint` on takeover) → post the reply via
+   `chat.postMessage(roomId, text, tmid=thread_root)` → **mark consumed, then release**.
+   `SKIP LOCKED` + per-node cap **is** the "least-busy" fair queue — a saturated node doesn't
+   pull, so work flows to nodes with free slots. No global balancer.
+
+M11 is thus **glue over M10**: a webhook controller, the `rocketchat_thread` map, a RocketChat
+REST client, and reuse of the M10 sweeper + steering inbox. It adds no new coordination.
 
 **Deliverables**
-- Ingestion (webhook endpoint recommended; realtime adapter optional) → Postgres inbox.
-- Thread↔session mapping table (`rocketchat_thread`, `tmid` ⇄ `session_id`).
-- New-thread pull loop (`FOR UPDATE SKIP LOCKED`, per-node concurrency cap) → claim +
-  run.
-- Continuation → M10 steering inbox; reply posted to the thread via RocketChat REST.
+- `ki-rocketchat` module: webhook controller (token + echo guard), `RocketChatClient`
+  (`chat.postMessage` with `tmid`), config for base URL / bot user id / auth token (by env).
+- `rocketchat_thread` table (`thread_root` PK ⇄ `session_id` ⇄ `room_id`) + the resolve/upsert.
+- Wire ingestion to the M10 inbox (new) / `SteeringInbox` (continuation); reply from the loop.
 
 **Acceptance**
-- Open a thread with a first message → some node picks it up (respecting its cap) and
-  replies in-thread.
-- A follow-up in the same thread reaches the **same session** (via steering) even if a
-  *different* node received the HTTP delivery.
-- If the owning node dies mid-answer, M10 failover lets another node finish and reply.
-- Two nodes at capacity vs. one idle: new threads flow to the idle node (`SKIP LOCKED`).
+- First message in a thread → some node (respecting its cap) runs the turn and replies
+  **in-thread** (`tmid` set); a `rocketchat_thread` row maps root ⇄ session.
+- A follow-up reaches the **same session** even when a **different** node received the HTTP
+  delivery (decoupling proven) — via the steering inbox.
+- The bot's own reply does **not** trigger another turn (echo guard).
+- Owner killed mid-turn → the M10 sweeper on another node finishes the turn and replies.
+- Two nodes saturated, one idle → new threads flow to the idle node (`SKIP LOCKED`).
+- IT behind `KI_IT` with a **stub RocketChat** (a local HTTP server capturing `chat.postMessage`),
+  so no live RocketChat is needed offline.
 
 ---
 
@@ -1123,8 +1165,9 @@ ki-tui (viewport, input).
   against a real LiteLLM endpoint.
 - **Long-conversation / compaction recall IT** *(M6 deferral)* — a scripted long
   session stays under the window and still recalls an early-turn fact after compaction.
-- **Remote-Postgres IT for `ki-store-spring`** *(M4 deferral)* — the `SessionStore`
-  contract against a real Postgres (Testcontainers), behind `KI_IT`.
+- **Remote-Postgres IT for `ki-cluster`** *(M4 deferral)* — the `SessionStore`/`CheckpointStore`
+  contracts against a real Postgres (Testcontainers), behind `KI_IT`. *(M10 already added
+  Testcontainers-Postgres coverage for the coordination primitives.)*
 - **Golden / snapshot tests for TUI rendering** *(backlog)* — lock the differential
   renderer against recorded line buffers.
 
