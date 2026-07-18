@@ -42,17 +42,25 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M5 | Tool permissions & approval | ▢ Deferred (yolo mode for now) |
 | M6 | Context & token management | ✅ Done |
 | M7 | TUI: slash commands, cancel, cost | ✅ Done (streaming deferred) |
-| M8 | Robustness: retry, tool-errors, process-kill, logging | ✅ Done (checkpoints split to M8b) |
-| M8b | Agent-persistence checkpoints & crash recovery | ▢ Deferred (own pass) |
-| M9 | Packaging & distribution | ▢ Planned |
-| M10 | Live streaming & interactive TUI | ▢ Planned |
-| M11 | Tool suite completion | ▢ Planned |
-| M12 | Rich rendering & multi-provider | ▢ Planned |
-| M13 | Integration & snapshot testing | ▢ Planned |
+| M8 | Robustness: retry, tool-errors, process-kill, logging | ✅ Done (checkpoints split to M9) |
+| M9 | Persistence: checkpoints, crash recovery & resume | ▢ Planned (was M8b) |
+| M10 | Distributed multi-node ki (Spring/Postgres) | ▢ Planned |
+| M11 | RocketChat bot reference implementation | ▢ Planned |
+| M12 | Packaging & distribution | ▢ Planned (was M9) |
+| M13 | Live streaming & interactive TUI | ▢ Planned (was M10) |
+| M14 | Tool suite completion | ▢ Planned (was M11) |
+| M15 | Rich rendering & multi-provider | ▢ Planned (was M12) |
+| M16 | Integration & snapshot testing | ▢ Planned (was M13) |
 
 M8+ are the **most-reasonable reorganization of every deferred/backlog item** carried
 out of M1–M7 (each milestone below cites the milestone it inherits work from). M5
 (permissions) is intentionally skipped for now and picked up later.
+
+**Renumber note:** the old **M8b** (agent-persistence checkpoints) is now **M9**, and
+**two new milestones were inserted** — **M10** (distributed multi-node) and **M11**
+(RocketChat bot). So former M9–M13 each shift **up by 3** to M12–M16. The insert order
+follows the dependency chain: **resume/checkpoints (M9) → distributed failover (M10) →
+RocketChat bot (M11)** — the bot is a consumer of the distributed session layer.
 
 ---
 
@@ -363,7 +371,7 @@ than writing `.jsonl`.
   `createCheckpointAfterNode` / `rollbackToCheckpoint`) snapshots mid-execution graph
   state for crash-recovery / undo — a different concern from the transcript. Plan it
   as an optional second SPI-backed `PersistenceStorageProvider` with its own tables;
-  **default off**, revisit alongside M8 robustness. Do not conflate with history.
+  **default off**, revisit alongside M9 persistence. Do not conflate with history.
 
 ### Decision B — storage SPI + two impls (SQLite local / Postgres-Spring remote)
 
@@ -503,7 +511,7 @@ seam, two producers.
 
 ### Deferred / backlog
 
-- koog `Persistence` checkpoints / rollback (Decision A) — wire in M8.
+- koog `Persistence` checkpoints / rollback (Decision A) — wire in M9.
 - Real preprocessor ordering (trim/summarize) — M6.
 - A pooled local backend (HikariCP) — unneeded for a single-user CLI; add only if a
   local multi-connection use case appears.
@@ -576,7 +584,7 @@ the catalog window reaches `KiLlm`.
 `interceptStrategyCompleted` stores the (now compressed) prompt, so resume reloads the
 compacted history, not the raw one. That satisfies the acceptance criterion (early
 context survives via the TL;DR) but means a full audit trail, if ever needed, belongs
-to the M8 checkpoint seam. Coherent-long-conversation + early-fact-recall remain live
+to the M9 checkpoint seam. Coherent-long-conversation + early-fact-recall remain live
 IT (behind `KI_IT`) since they're LLM-quality, not deterministic. Chat-memory
 preprocessor ordering intentionally left passthrough (redundant once compression
 persists the compacted prompt).
@@ -671,7 +679,7 @@ green (change was additive).
 
 **Goal:** survive flaky networks, bad inputs, and runaway subprocesses without dying
 or corrupting a session. *(Existing M8 + process-tree kill carried from M3.
-Agent-persistence checkpoints split out to M8b as their own pass.)*
+Agent-persistence checkpoints split out to M9 as their own pass.)*
 
 **Delivered**
 - **LLM-call retry with exponential backoff** (`ki-ai` `RetryingPromptExecutor`,
@@ -679,7 +687,7 @@ Agent-persistence checkpoints split out to M8b as their own pass.)*
   408/425, rate-limit (429), and bare network I/O — with full-jitter backoff; fails
   fast on auth/bad-request (401/403/400/404/422). Classifier walks the cause chain for
   koog's `KoogHttpClientException(statusCode)`. Only the non-streaming `execute`
-  paths retry (a streaming `Flow` has no safe restart point → deferred to M10).
+  paths retry (a streaming `Flow` has no safe restart point → deferred to M13).
 - **Tool-error recovery** (test-pinned, commit `d7a683d`). Verified koog's
   `GenericAgentEnvironment` already converts a thrown tool exception, an unknown tool,
   and bad-args into an error tool-result instead of crashing the loop — so no
@@ -711,49 +719,236 @@ Agent-persistence checkpoints split out to M8b as their own pass.)*
 - Tool-error handling turned out to be framework-native (koog), so this became a
   test-pin, not new code.
 - Cancel-path reaping (vs. timeout) runs through AgentBridge coroutine-cancel, not
-  `BashExec`; only the timeout path is wired/tested here (cancel → M10).
+  `BashExec`; only the timeout path is wired/tested here (cancel → M13).
 
 <details><summary>Original plan (superseded)</summary>
 
 Deliverables: retry/backoff; tool-error capture + malformed-args→corrective message;
 process-tree kill (proposed `setsid`); agent-persistence checkpoints; structured
 logging. Acceptance included "with checkpoints on, killing the process mid-run and
-restarting recovers the run" — moved to M8b.
+restarting recovers the run" — moved to M9.
 </details>
 
 ---
 
-## M8b — Agent-persistence checkpoints & crash recovery
+## M9 — Persistence: checkpoints, crash recovery & resume
 
-**Goal:** opt-in mid-run snapshots so a killed process can resume, and the **raw
-transcript** that M6 compaction overwrites in history is preserved. *(M4 Decision A
-"secondary role"; M6 flagged the gap. Split from M8: koog ships the machinery
-(`agents-features-snapshot`: `Persistence` feature, `PersistenceStorageProvider`,
-`AgentCheckpointData`), but wiring + a crash-recovery IT is a milestone on its own.)*
+**Goal:** opt-in mid-run snapshots so a killed process can resume from where it left
+off, a **live in-session resume** the M4 transcript-reload didn't cover, and the **raw
+transcript** that M6 compaction overwrites in history preserved for audit. *(Was M8b.
+M4 Decision A "secondary role"; M6 flagged the compaction gap; M7 left `/resume`
+hint-only.)* **This milestone is the local/single-node foundation the distributed M10
+builds on** — the checkpoint SPI it lands is exactly what M10 fails over across nodes.
 
-**Modules:** ki-agent (install `Persistence`, checkpoint SPI), ki-cli + ki-store-spring
-(checkpoint storage), build.
+**Modules:** ki-agent (install `Persistence`, checkpoint SPI seam), ki-cli
+(SQLite checkpoint store + `/resume` re-seed), ki-store-spring (JdbcTemplate checkpoint
+store), build.
+
+### What M4 already ships vs. the delta here
+
+M4's `--resume`/`--continue` already **reload the transcript** from the message store
+into a *fresh* run. Don't re-describe that. The delta M9 owns:
+- **Checkpoint-based resume of an *interrupted* run** — M4 resumes a *completed*
+  session's history; a session killed **mid-turn** (mid tool-loop) has no clean final
+  store write. Checkpoints capture graph state at node boundaries so an interrupted run
+  restarts at the last node, not the last completed turn.
+- **Live in-session `/resume`** — M7 shipped `/resume` as a hint only (restart with the
+  flag). Wire it to actually re-seed the live `KiController` session in place.
+
+### koog machinery (verified against `agents-features-snapshot` 1.0.0-preview7)
+
+- `Persistence` feature; `PersistenceFeatureConfig.enableAutomaticPersistence` (default
+  **true**) checkpoints **after each graph node** via `createCheckpointAfterNode`.
+- `AgentCheckpointData` is a plain `@Serializable` (kotlinx) data class — `checkpointId`,
+  `createdAt`, `messageHistory: List<Message>`, `nodePath` (graph position),
+  `storage` (`AIAgentStorage` as JSON), `agentIterations`, `llmModel`/`tools`. It is a
+  **self-contained JSON blob**, so persisting it is the same opaque-blob discipline as
+  `MessageCodec` — and, because it carries the full graph position + history, it can be
+  deserialized and resumed in a **different process** (the crux M10 depends on; see M10).
+- **SPI is `PersistenceStorageProvider<Filter>`** — suspend `saveCheckpoint(sessionId,
+  data)`, `getLatestCheckpoint(sessionId)`, `getCheckpoints(sessionId)`. Implement it
+  over the store, keyed by `sessionId` — mirrors the M4 `SessionStore` two-impl pattern.
+- Resume entry points: `persistence.rollbackToLatestCheckpoint(ctx)` and
+  `runFromCheckpoint(session, input, checkpoint, rollbackStrategy)` — the latter resumes
+  a checkpoint **with new input**, which is also the M10 steering seam (noted there).
 
 **Deliverables**
-- A `PersistenceStorageProvider` backed by a new checkpoint table (SQLite locally,
-  JdbcTemplate remotely) alongside the existing message store; koog `AgentCheckpointData`
-  serialized with koog Json (same opaque-blob discipline as `MessageCodec`).
-- `install(Persistence)` in `KiAgent`, default off; config for continuous vs. on-demand
-  snapshots.
+- A `PersistenceStorageProvider` backed by a new `ki_checkpoint` table (SQLite locally,
+  JdbcTemplate remotely), sibling to the M4 message store; blob serialized with koog Json.
+- `install(Persistence)` in `KiAgent`, **default off** (opt-in via config); choose
+  continuous (`enableAutomaticPersistence`) vs. on-demand snapshots.
 - Recovery: on restart with checkpoints on, load the latest checkpoint and roll the
-  agent context back to it.
-- Preserve the pre-compaction raw transcript for audit/rollback.
+  agent context back to it, then continue.
+- Live `/resume` re-seed in `KiController` (finish the M7 deferral).
+- Preserve the pre-compaction raw transcript for audit/rollback (M6 gap) — the checkpoint
+  `messageHistory` is the raw record even after history-store compaction overwrites the
+  session rows.
 
 **Acceptance**
-- With checkpoints on, killing the process mid-run and restarting recovers the run
-  (fork-a-process integration test).
-- Raw transcript survives an M6 compaction.
+- With checkpoints on, killing the process mid-run and restarting **recovers the run**
+  (fork-a-process integration test) — restarts at the last node, not the last turn.
+- Raw transcript survives an M6 compaction (assert an early message recoverable from the
+  checkpoint blob after the session store was compacted).
+- `/resume` re-seeds a live session without a restart.
+
+**Caveat (carried into M10):** checkpoints snapshot at node boundaries, so a
+side-effecting tool (`bash`, `write`) that ran **after** the last checkpoint but before
+the crash **re-runs** on recovery — recovery is at-least-once, not exactly-once. Flag
+idempotency; do not imply clean exactly-once resume.
 
 ---
 
-## M9 — Packaging & distribution
+## M10 — Distributed multi-node ki (Spring/Postgres)
 
-**Goal:** a runnable, distributable `ki` — the first "real v0.1" gate. *(Existing M9;
+**Goal:** run ki as a **distributed, multi-node service** where each node runs its own
+ki instance against one shared Postgres. A session runs to completion on the node that
+owns it; if that node **fails mid-session**, another node picks it up from the last M9
+checkpoint. **Steering** messages can be written to the DB by *any* node and are picked
+up and fed to the model by the node currently working the session. *(This is the
+"bigger" persistence feature; distributed deployment is **Spring + Postgres only** —
+never the local SQLite/CLI path.)*
+
+**Modules:** ki-agent (session-ownership + steering-input **seams** only — no Spring),
+**new `ki-cluster` or into `ki-store-spring`** (all coordination: advisory locks,
+Postgres queues, LISTEN/NOTIFY), a host Spring app (wiring). **Module boundary is an
+acceptance criterion** (per M4): `:ki-cli:dependencies` must still show **no spring /
+no postgres**. Coordination code lives only in the Spring-side module; ki-agent exposes
+interfaces, the Postgres module implements them — same SPI discipline as M4.
+
+### Decision A — coordination via **session-level** advisory locks (not xact locks)
+
+The user's constraint "avoid long-running transactions" is load-bearing. Use
+**`pg_try_advisory_lock(session_key)`** on a **dedicated connection in autocommit**, held
+for the lifetime of session ownership — **not** `pg_advisory_xact_lock`, which would
+require an open transaction for the whole session = exactly the long transaction to
+avoid. Session-level locks give both things needed:
+- **single-owner mutual exclusion** — only one node holds a session's lock at a time;
+- **automatic release on crash** — when the owning node's connection drops, Postgres
+  releases the lock, so another node's `pg_try_advisory_lock` then **succeeds and takes
+  over**. This is the failover primitive; no heartbeat table needed for liveness.
+
+All DB writes (append messages, save checkpoints, consume steering) happen in **separate
+short transactions** while the lock is held. The lock guards ownership; it never wraps a
+model call or a tool run.
+
+**Pooling tension (state it, don't hide it):** a session-level advisory lock **pins its
+connection** — you cannot return that connection to Hikari while the lock is held. So
+owning N concurrent sessions needs N dedicated connections (a small dedicated
+ownership-pool, separate from the app's main pool). This **bounds sessions-per-node** and
+is a real capacity knob, not a bug.
+
+### Decision B — failover replays from the last checkpoint (at-least-once)
+
+On takeover, the new owner loads the session's latest M9 `AgentCheckpointData` and
+resumes via `runFromCheckpoint`. Because `AgentCheckpointData` is a self-contained JSON
+blob (M9), cross-node resume needs no shared in-memory state. **Inherit the M9 caveat:**
+a tool side effect between the last checkpoint and the crash re-runs on the new node.
+Tune checkpoint frequency (checkpoint after each tool node) to shrink the replay window;
+document tool idempotency as the residual risk. Optionally: a "checkpoint-before-side-
+effecting-tool" hook to make the replay window a no-op for already-applied writes.
+
+### Decision C — steering via a DB inbox, applied at step boundaries
+
+- **Any node writes** a steering row: `ki_steering(session_id, seq, payload,
+  consumed_at)`. The **owning node** polls (baseline) its own sessions' unconsumed
+  steering rows and, at the **next node/step boundary**, feeds the payload into the run
+  via `runFromCheckpoint(session, input=steering, checkpoint)` (the M9 seam), marking the
+  row consumed in a short transaction.
+- **Optimization (optional):** Postgres **LISTEN/NOTIFY** to signal "new steering for
+  session X" instead of polling — but as a **signal, not a payload** (NOTIFY has size
+  limits and no durability), on its **own dedicated connection**. The DB row remains the
+  source of truth.
+- **Honest boundary:** steering applies at the **next step boundary**, not mid-token /
+  mid-tool. koog has no seam to inject input into an already-running node.
+
+**Deliverables**
+- `SessionOwnership` seam in ki-agent (claim / renew / release / is-owner), Postgres
+  advisory-lock impl in the Spring module over a dedicated ownership connection.
+- Failover: unowned sessions with pending work are **claimable**; on claim, resume from
+  the latest checkpoint. A scan/poll (or NOTIFY) finds work whose owner died.
+- `SteeringInbox` seam (write from any node; drain for owned sessions), Postgres impl
+  (short-tx insert + `... consumed_at IS NULL` drain), applied via the M9 checkpoint-run
+  seam at step boundaries.
+- All coordination in the Spring-side module; **CLI classpath stays spring/postgres-free**.
+
+**Acceptance**
+- Two nodes, one Postgres: start a long session on node A, `kill -9` node A mid-run, node
+  B **detects the released lock, claims the session, and completes it** from the last
+  checkpoint (integration test, Testcontainers Postgres, behind `KI_IT`).
+- A steering row written **via node B** for a session owned by **node A** is picked up and
+  reaches the model on node A at the next step boundary.
+- No long-running transaction: assert coordination uses session-level advisory locks +
+  short write transactions (no open tx spans a model call).
+- `:ki-cli:dependencies` still shows **no spring, no postgres** (module-boundary gate).
+
+---
+
+## M11 — RocketChat bot reference implementation
+
+**Goal:** a reference **RocketChat bot** that lets a user talk to a distributed ki
+deployment (M10) from a RocketChat thread — the bot receives a user message, runs it
+through an agent, and posts the answer back. **A new thread starts a new session; further
+messages in that thread are steering into the existing session.** *(Reference impl per
+the user's real use case; a later pass builds it out.)*
+
+**Modules:** a new bot module (Spring, depends on `ki-store-spring` + M10 `ki-cluster`);
+no change to ki-agent/ki-cli seams.
+
+### The delivery question, answered straight
+
+The user asked whether "each node runs its own bot instance, and the node that receives a
+message starts the session." **It depends on the RocketChat ingestion mode, and the clean
+answer is to decouple ingestion from processing regardless:**
+- **Outgoing webhook behind a load balancer** — RocketChat POSTs each new message to one
+  URL; the LB routes it to **one** node. This matches "receiving node handles it" cleanly
+  and is the recommended ingestion path. *(Verify the webhook payload carries the thread
+  id — `tmid` — so continuations can be routed as steering.)*
+- **Realtime / bot-user WebSocket** — if N nodes all connect as the **same bot user**,
+  RocketChat **broadcasts every message to all subscribers** → N-fold duplicate
+  processing. So this mode *requires* a DB claim step anyway. **Don't** rely on
+  "receiving node = owner" here.
+
+Either way, **decouple**: ingestion writes the incoming message to a Postgres **inbox**;
+processing is pulled from the DB. This unifies with M10 and removes the ingestion-mode
+dependency.
+
+### Decision — new thread = fair pull; continuation = steering (reuse M10)
+
+- **New thread (no `tmid`)** → insert an inbox row; **any node** pulls it under its
+  concurrency cap via `SELECT … FOR UPDATE SKIP LOCKED` in a short transaction. That
+  **is** the "least-busy" fair queue — a node at capacity simply doesn't pull, so work
+  flows to nodes with spare slots. **Do not build a global least-busy balancer**;
+  `SKIP LOCKED` + per-node cap is the right primitive and premature to over-engineer.
+  The pulling node claims the session (M10 `SessionOwnership`) and starts the run.
+- **Continuation (has `tmid` of an existing session)** → **this is an M10 steering
+  message.** Write it to the steering inbox keyed by the session that owns the thread; the
+  node currently working that session drains and applies it at the next step boundary
+  (M10 Decision C). No separate mechanism.
+- **Reply** posted back to the thread by the node that produced it (via RocketChat REST).
+
+This makes M11 mostly **glue over M10** — thread↔session mapping, RocketChat REST in/out,
+and the inbox pull loop — confirming the dependency: **M11 needs M10**.
+
+**Deliverables**
+- Ingestion (webhook endpoint recommended; realtime adapter optional) → Postgres inbox.
+- Thread↔session mapping table (`rocketchat_thread`, `tmid` ⇄ `session_id`).
+- New-thread pull loop (`FOR UPDATE SKIP LOCKED`, per-node concurrency cap) → claim +
+  run.
+- Continuation → M10 steering inbox; reply posted to the thread via RocketChat REST.
+
+**Acceptance**
+- Open a thread with a first message → some node picks it up (respecting its cap) and
+  replies in-thread.
+- A follow-up in the same thread reaches the **same session** (via steering) even if a
+  *different* node received the HTTP delivery.
+- If the owning node dies mid-answer, M10 failover lets another node finish and reply.
+- Two nodes at capacity vs. one idle: new threads flow to the idle node (`SKIP LOCKED`).
+
+---
+
+## M12 — Packaging & distribution
+
+**Goal:** a runnable, distributable `ki` — the first "real v0.1" gate. *(Was M9;
 includes committing the Gradle wrapper carried from M1.)*
 
 **Modules:** build, ki-cli.
@@ -771,9 +966,9 @@ includes committing the Gradle wrapper carried from M1.)*
 
 ---
 
-## M10 — Live streaming & interactive TUI
+## M13 — Live streaming & interactive TUI
 
-**Goal:** the interactive polish deferred from M7 (and M2) — the agent feels live.
+**Goal:** the interactive polish deferred from M7 (and M2) — the agent feels live. *(Was M10.)*
 
 **Modules:** ki-agent (streaming strategy), ki-cli (transcript/streaming render),
 ki-tui (viewport, input).
@@ -795,9 +990,9 @@ ki-tui (viewport, input).
 
 ---
 
-## M11 — Tool suite completion
+## M14 — Tool suite completion
 
-**Goal:** finish the toolset to pi parity and make script-tool config real.
+**Goal:** finish the toolset to pi parity and make script-tool config real. *(Was M11.)*
 
 **Modules:** ki-agent (tools), ki-cli (manifest → tool config), bundled scripts.
 
@@ -821,9 +1016,9 @@ ki-tui (viewport, input).
 
 ---
 
-## M12 — Rich rendering & multi-provider
+## M15 — Rich rendering & multi-provider
 
-**Goal:** richer UI surfaces and provider reach beyond LiteLLM.
+**Goal:** richer UI surfaces and provider reach beyond LiteLLM. *(Was M12.)*
 
 **Modules:** ki-tui (components), ki-ai (providers), ki-agent (templating).
 
@@ -843,9 +1038,9 @@ ki-tui (viewport, input).
 
 ---
 
-## M13 — Integration & snapshot testing
+## M16 — Integration & snapshot testing
 
-**Goal:** close the live/`KI_IT` and golden-test gaps left deferred across milestones.
+**Goal:** close the live/`KI_IT` and golden-test gaps left deferred across milestones. *(Was M13.)*
 
 **Modules:** all (tests).
 
@@ -899,6 +1094,7 @@ export LITELLM_API_KEY=sk-...                    # if your proxy requires one
 ./gradlew :ki-cli:installDist && ki-cli/build/install/ki-cli/bin/ki-cli
 ```
 
-**M1–M4, M6, M7 are done** (M5 deferred). Next up is **M8** (robustness, errors &
-recovery). Each milestone is independently shippable; keep the
+**M1–M4, M6, M7, M8 are done** (M5 deferred). Next up is **M9** (persistence:
+checkpoints, crash recovery & resume), the foundation for **M10** (distributed
+multi-node) and **M11** (RocketChat bot). Each milestone is independently shippable; keep the
 integration-test-behind-`KI_IT` discipline so `gradle build` stays green offline.
