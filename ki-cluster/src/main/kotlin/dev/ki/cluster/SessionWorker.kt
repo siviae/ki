@@ -103,6 +103,10 @@ class SessionWorker(
             if (pending.isEmpty()) return true // already consumed (e.g. a lost-wakeup false positive)
             val input = pending.joinToString("\n") { it.payload }
             val reply = runner.runTurn(sessionId, input)
+            // Reply BEFORE markConsumed: a crash in this window makes another node re-run and
+            // reply again (at-least-once replies). Chosen deliberately over mark-then-reply,
+            // whose crash-window instead *loses* the reply — a duplicate reply beats a silent
+            // one. Downstream (e.g. RocketChat) should tolerate/dedupe a repeated reply.
             replySink.onReply(sessionId, reply)
             inbox.markConsumed(sessionId, pending.last().seq) // AFTER the turn — never before
             return true

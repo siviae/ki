@@ -980,11 +980,19 @@ effecting-tool" hook to make the replay window a no-op for already-applied write
   supply the actual agent turn, keeping the loop free of model config. Steering consume-order
   refactored to **peek → run → markConsumed** (was atomic take-and-mark) so a mid-turn crash
   leaves work unconsumed for retry. *(done, verified against Postgres)*
+- ✅ **Real-`KiAgent`-through-worker failover** (`WorkerAgentFailoverTest`, offline): the
+  `SessionWorker` drives a real checkpointing `KiAgent` across a crash + takeover — node A calls
+  a tool then crashes (message left unconsumed), node B's worker resumes from the checkpoint and
+  completes. Proves the `SessionTurnRunner` seam end to end **and** that re-feeding the peeked
+  input on takeover does **not** double-add the user message (koog's rollback dedupes; plain
+  `agent.run` + auto-rollback suffices — no `runFromCheckpoint` branch needed).
 - ▢ LISTEN/NOTIFY accelerator (optional, on a dedicated connection).
-- ▢ Full real-`KiAgent`-through-worker e2e (checkpoint takeover + reply) — the pieces are each
-  verified (checkpoint resume in `CheckpointRecoveryTest`, worker+coordination in `WorkerIT`);
-  a single monolithic run wiring a real agent turn into the worker on Postgres remains.
 - All coordination in `ki-cluster`; **CLI classpath stays spring/postgres-free**.
+
+**Reply-delivery semantics (documented trade):** the worker replies **before** marking
+consumed, so a crash in that window yields an **at-least-once reply** (another node re-runs and
+replies again) rather than mark-then-reply's silent lost reply. Downstream (M11 RocketChat)
+should tolerate/dedupe a repeated reply.
 
 **Acceptance**
 - Two nodes, one Postgres: a turn running on node A, `kill -9` node A mid-turn; node B's
