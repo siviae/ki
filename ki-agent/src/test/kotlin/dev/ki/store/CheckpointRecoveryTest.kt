@@ -89,11 +89,14 @@ class CheckpointRecoveryTest {
         }
     )
 
+    // compressHistory = true matches the shipped CLI config: checkpoints coexist with the
+    // FromLastNMessages compression strategy branch (not NoCompression), which is the branch
+    // install(Persistence)'s `require(uniqueNames)` actually runs against in production.
     private fun agent(exec: PromptExecutor, history: StoreChatHistoryProvider, ckpt: StoreCheckpointProvider) =
         KiAgent(
             KiLlm.of(exec, KiModel(id = "test", contextWindow = 100_000)),
             systemPrompt = "SYS", tools = listOf(noteTool()),
-            compressHistory = false, historyProvider = history, checkpointProvider = ckpt,
+            compressHistory = true, historyProvider = history, checkpointProvider = ckpt,
         )
 
     @Test fun `a crashed run resumes on a fresh instance without duplicating prior history`() {
@@ -147,6 +150,11 @@ class CheckpointRecoveryTest {
         assertTrue(
             resultTexts.any { it.contains("remember-1") } || callTexts.any { it.contains("remember-1") },
             "resumed context should carry the pre-crash turn-1 work",
+        )
+        // Turn 0 survives EXACTLY once — not dropped (which <=1 alone would let pass), not doubled.
+        assertEquals(
+            1, resultTexts.count { it.contains("remember-0") },
+            "turn-0 tool result must survive exactly once through the ChatMemory+checkpoint resume",
         )
     }
 }

@@ -818,16 +818,23 @@ into a *fresh* run. Don't re-describe that. The delta M9 owns:
 - Recovery: on restart with checkpoints on, load the latest checkpoint and roll the
   agent context back to it, then continue.
 - Live `/resume` re-seed in `KiController` (finish the M7 deferral).
-- Preserve the pre-compaction raw transcript for audit/rollback (M6 gap) — the checkpoint
-  `messageHistory` is the raw record even after history-store compaction overwrites the
-  session rows.
+- Partial raw-transcript preservation for audit (M6 gap). **Honest scope:** checkpoints
+  fire `interceptNodeExecutionCompleted` — *after every node, including the compression
+  node* — so a checkpoint taken **after** compression captures the compacted history, not
+  raw. The raw transcript survives only in the **earlier, pre-compression checkpoint rows**
+  (append-only chain, one row per node), and only while those rows are unpruned. A full
+  audit trail is therefore best-effort here, not guaranteed; a dedicated raw-log seam, if
+  ever required, is a separate concern from crash-recovery.
 
 **Acceptance**
-- With checkpoints on, killing the process mid-run and restarting **recovers the run**
-  (fork-a-process integration test) — restarts at the last node, not the last turn.
-- Raw transcript survives an M6 compaction (assert an early message recoverable from the
-  checkpoint blob after the session store was compacted).
+- With checkpoints on, killing the process mid-run and restarting **recovers the run** —
+  restarts at the last node, not the last turn. *(Met via a **two-instance in-process
+  test** sharing one store + session id, which round-trips the blob through `CheckpointCodec`
+  and so supports the cross-node claim; a true fork-a-process IT is not yet run.)*
 - `/resume` re-seeds a live session without a restart.
+- **Shipped config exercised:** checkpoints coexist with `compressHistory=true` (the
+  `FromLastNMessages` strategy branch `require(uniqueNames)` runs against in production),
+  not only the `NoCompression` test branch.
 
 **Caveat (carried into M10):** checkpoints snapshot at node boundaries, so a
 side-effecting tool (`bash`, `write`) that ran **after** the last checkpoint but before
