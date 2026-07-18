@@ -876,11 +876,12 @@ exposes interfaces, the Postgres module implements them — same SPI discipline 
   transactions. `SteeringInbox` registered as a Spring bean; `SessionOwnership` deliberately
   **not** auto-wired (needs a dedicated `DataSource`, documented on the config).
 - **Verified — offline:** `AdvisoryKeysTest` (determinism + a pinned cross-node constant).
-  `CoordinationIT` (advisory-lock mutual exclusion, **auto-release on a dropped owner
-  connection** = the failover primitive, steering drain-once-in-order) is written against a
-  **Testcontainers Postgres** but **self-skips without `KI_IT`+Docker — its runtime behavior
-  is not yet exercised in CI** (advisory locks are Postgres-only; SQLite can't cover them).
-  `./gradlew build` green.
+- **Verified — against real Postgres 16** (`CoordinationIT`, Testcontainers, `KI_IT=1`, all
+  3 green): advisory-lock **mutual exclusion** (node B can't claim node A's session),
+  **auto-release on a dropped owner connection** — the failover primitive: a raw connection
+  takes the lock, is closed to simulate a node crash, and another instance's `tryClaim` then
+  succeeds — and **steering drain-once-in-order** (second drain sees rows consumed, other
+  sessions untouched). Self-skips without `KI_IT`+Docker. `./gradlew build` green.
 
 **Still open (the larger half): the failover orchestration loop** — the glue that, per node,
 claims sessions, resumes an owned session from its latest M9 checkpoint, drains steering into
