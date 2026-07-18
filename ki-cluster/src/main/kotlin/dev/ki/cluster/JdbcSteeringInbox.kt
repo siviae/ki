@@ -6,16 +6,15 @@ import org.springframework.jdbc.core.JdbcTemplate
 
 /**
  * Postgres [SteeringInbox] over Spring [JdbcTemplate] — a durable inbox table any node writes
- * to and the session's owner drains. Both operations are **single statements** (short, no
+ * to and the session's owner drains. Every operation is a **single statement** (short, no
  * explicit transaction), consistent with M10's "avoid long-running transactions".
  *
- * [drain] is an atomic take-and-mark via `UPDATE … WHERE consumed_at IS NULL RETURNING`: the
- * UPDATE row-locks matched rows, so even a racing second drain (or a stray non-owner) sees them
- * already consumed and gets nothing — the owner still applies each message exactly once.
- * `RETURNING` order is unspecified, so results are sorted by [SteeringMessage.seq] here.
+ * Consume ordering is **peek-then-mark** (not take-and-mark): [peek] reads without marking, and
+ * [markConsumed] runs only after the turn succeeds — so a mid-turn crash leaves the rows
+ * unconsumed for another node to re-run (at-least-once). Correct without an atomic take because
+ * [dev.ki.store.SessionOwnership] guarantees only the owner touches a given session.
  *
- * Postgres-only (identity column, `RETURNING`); covered by the Testcontainers IT, not the
- * offline SQLite tests.
+ * Postgres-only (identity column); covered by the Testcontainers IT, not the offline SQLite tests.
  */
 open class JdbcSteeringInbox(
     private val jdbc: JdbcTemplate,
@@ -45,14 +44,27 @@ open class JdbcSteeringInbox(
         jdbc.update("INSERT INTO ki_steering (session_id, payload) VALUES (?, ?)", sessionId, payload)
     }
 
-    override fun drain(sessionId: String): List<SteeringMessage> =
+    override fun peek(sessionId: String): List<SteeringMessage> =
         jdbc.query(
-            """
-            UPDATE ki_steering SET consumed_at = ?
-            WHERE session_id = ? AND consumed_at IS NULL
-            RETURNING seq, payload
-            """.trimIndent(),
+            "SELECT seq, payload FROM ki_steering " +
+                "WHERE session_id = ? AND consumed_at IS NULL ORDER BY seq",
             { rs, _ -> SteeringMessage(rs.getLong("seq"), rs.getString("payload")) },
-            System.currentTimeMillis(), sessionId,
-        ).sortedBy { it.seq }
+            sessionId,
+        )
+
+    override fun markConsumed(sessionId: String, throughSeq: Long) {
+        jdbc.update(
+            "UPDATE ki_steering SET consumed_at = ? " +
+                "WHERE session_id = ? AND consumed_at IS NULL AND seq <= ?",
+            System.currentTimeMillis(), sessionId, throughSeq,
+        )
+    }
+
+    override fun pendingSessions(limit: Int): List<String> =
+        jdbc.query(
+            "SELECT session_id FROM ki_steering WHERE consumed_at IS NULL " +
+                "GROUP BY session_id ORDER BY MIN(seq) LIMIT ?",
+            { rs, _ -> rs.getString("session_id") },
+            limit,
+        )
 }

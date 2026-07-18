@@ -44,7 +44,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M7 | TUI: slash commands, cancel, cost | ✅ Done (streaming deferred) |
 | M8 | Robustness: retry, tool-errors, process-kill, logging | ✅ Done (checkpoints split to M9) |
 | M9 | Persistence: checkpoints, crash recovery & resume | ✅ Done |
-| M10 | Distributed multi-node ki (Spring/Postgres) | ◐ Coordination primitives done; failover loop left |
+| M10 | Distributed multi-node ki (Spring/Postgres) | ◐ Primitives + orchestration loop done (Postgres-verified); LISTEN/NOTIFY + real-agent e2e left |
 | M11 | RocketChat bot reference implementation | ◐ Designed (verified surface); build pending M10 loop |
 | M12 | Packaging & distribution | ▢ Planned (was M9) |
 | M13 | Live streaming & interactive TUI | ▢ Planned (was M10) |
@@ -915,8 +915,10 @@ Designing M11 fixed the loop's shape. The contract, per node:
   needs a custom koog strategy node or cancel + `runFromCheckpoint`. v1 is turn-based: steering
   is drained at the turn boundary. The Q&A-bot use-case doesn't need mid-run interruption.
 
-Remaining to build: this loop (a `SessionWorker`/sweeper in ki-cluster), the two-node kill-9
-takeover IT, and the LISTEN/NOTIFY optimization.
+**Built (this pass):** the `SessionWorker`/sweeper loop, unit-tested offline with in-memory
+fakes (claim/run/reply/consume/release, crash-leaves-unconsumed, cross-node exclusion, cap)
+and verified over **real Postgres** (`WorkerIT`: end-to-end run, two-node race = turn-once,
+crashed-owner takeover). Remaining: LISTEN/NOTIFY and the monolithic real-agent e2e.
 
 ### Decision A — coordination via **session-level** advisory locks (not xact locks)
 
@@ -971,11 +973,17 @@ effecting-tool" hook to make the replay window a no-op for already-applied write
 - ✅ `SessionOwnership` seam (ki-agent) + `AdvisoryLockSessionOwnership` (ki-cluster,
   per-turn advisory lock on a dedicated connection). *(done, Postgres-verified)*
 - ✅ `SteeringInbox` seam + `JdbcSteeringInbox` (atomic `UPDATE … RETURNING` drain). *(done)*
-- ▢ **`SessionWorker` / sweeper loop** (ki-cluster): the per-node backbone above —
-  `SKIP LOCKED` pull under a concurrency cap → `tryClaim` → drain → `agent.run` (or
-  `runFromCheckpoint` on takeover) → mark-consumed-then-release. Handles new work, failover,
-  and lost wakeups in one loop.
+- ✅ **`SessionWorker` / sweeper loop** (ki-cluster): the per-node backbone —
+  `pendingSessions` → `tryClaim` (atomic arbiter) → `peek` → `runTurn` → reply →
+  `markConsumed` → `release`, under a concurrency cap. Handles new work, failover, and lost
+  wakeups in one loop. `SessionTurnRunner` / `TurnReplySink` seams (ki-agent) let the host
+  supply the actual agent turn, keeping the loop free of model config. Steering consume-order
+  refactored to **peek → run → markConsumed** (was atomic take-and-mark) so a mid-turn crash
+  leaves work unconsumed for retry. *(done, verified against Postgres)*
 - ▢ LISTEN/NOTIFY accelerator (optional, on a dedicated connection).
+- ▢ Full real-`KiAgent`-through-worker e2e (checkpoint takeover + reply) — the pieces are each
+  verified (checkpoint resume in `CheckpointRecoveryTest`, worker+coordination in `WorkerIT`);
+  a single monolithic run wiring a real agent turn into the worker on Postgres remains.
 - All coordination in `ki-cluster`; **CLI classpath stays spring/postgres-free**.
 
 **Acceptance**

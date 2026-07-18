@@ -11,6 +11,8 @@ dependencies {
     api(project(":ki-agent"))
     implementation(libs.spring.jdbc)
     implementation(libs.spring.context)
+    // SessionWorker is a coroutine sweeper over the seams (no Postgres of its own).
+    implementation(libs.kotlinx.coroutines.core)
 
     testImplementation(kotlin("test"))
     // Exercise the JdbcTemplate storage impls offline against an embedded SQLite DataSource;

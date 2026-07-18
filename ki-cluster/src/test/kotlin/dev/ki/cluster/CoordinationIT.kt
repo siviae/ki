@@ -75,7 +75,7 @@ class CoordinationIT {
         }
     }
 
-    @Test fun `steering inbox drains in order, once, per session`() {
+    @Test fun `steering inbox peeks in order and marks consumed only through the given seq`() {
         if (!enabled()) return
         withPostgres { c ->
             val jdbc = JdbcTemplate(dataSource(c))
@@ -85,12 +85,19 @@ class CoordinationIT {
             inbox.write("S", "two")
             inbox.write("other", "nope")
 
-            val drained = inbox.drain("S")
-            assertEquals(listOf("one", "two"), drained.map { it.payload })
-            assertTrue(drained[0].seq < drained[1].seq, "ordered by seq")
+            val peeked = inbox.peek("S")
+            assertEquals(listOf("one", "two"), peeked.map { it.payload })
+            assertTrue(peeked[0].seq < peeked[1].seq, "ordered by seq")
+            // Peek does NOT consume — a re-peek still sees them (crash-safety).
+            assertEquals(2, inbox.peek("S").size, "peek must not mark rows consumed")
 
-            assertTrue(inbox.drain("S").isEmpty(), "a second drain sees the rows already consumed")
-            assertEquals(listOf("nope"), inbox.drain("other").map { it.payload }, "other session untouched")
+            // A message that arrives during the turn (seq after what we peeked) survives markConsumed.
+            inbox.write("S", "three")
+            inbox.markConsumed("S", peeked.last().seq)
+            assertEquals(listOf("three"), inbox.peek("S").map { it.payload }, "only rows <= throughSeq consumed")
+
+            assertEquals(listOf("nope"), inbox.peek("other").map { it.payload }, "other session untouched")
+            assertEquals(setOf("S", "other"), inbox.pendingSessions(10).toSet(), "both have pending work")
         }
     }
 }
