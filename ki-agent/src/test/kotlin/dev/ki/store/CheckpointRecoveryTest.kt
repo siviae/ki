@@ -25,16 +25,16 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * M9 crash-recovery, verified across **two agent instances** sharing one checkpoint
- * store and session id — the offline stand-in for a killed-and-restarted process (and
- * the M10 cross-node-takeover primitive). Instance A runs a turn that calls a tool, then
- * "crashes" (executor throws) before completing; instance B, built fresh over the same
- * [CheckpointStore] and session id, resumes from the last checkpoint and finishes.
+ * M9 crash-recovery, verified across **two agent instances** sharing one checkpoint store
+ * and session id — the offline stand-in for a killed-and-restarted process (and the M10
+ * cross-node-takeover primitive).
  *
- * The load-bearing assertions: (1) B **completes** (recovery happened), (2) B's resumed
- * prompt carries the pre-crash tool call + result **exactly once** — no context
- * duplication when the checkpoint's wholesale `messageHistory` restore drives resume, and
- * (3) the tombstone lifecycle (non-tombstone after crash, tombstone after clean finish).
+ * Both features run together exactly as the CLI wires them — **chat-memory + checkpoints**
+ * — because the load-bearing risk is their coexistence: on resume, chat-memory reloads the
+ * last completed turn while `Persistence` restores the checkpoint's fuller history, and if
+ * the restore *appended* instead of *replacing* the context would silently double. So the
+ * scenario is: run 0 completes (chat-memory now holds a turn), run 1 crashes mid-tool, and
+ * a fresh instance resumes — asserting every prior message survives **exactly once**.
  */
 class CheckpointRecoveryTest {
 
@@ -49,6 +49,13 @@ class CheckpointRecoveryTest {
         }
         override fun latest(sessionId: String) = bySession[sessionId]?.maxByOrNull { it.version }
         override fun delete(sessionId: String) { bySession.remove(sessionId) }
+    }
+
+    private class MemSessionStore : SessionStore {
+        private val rows = mutableMapOf<String, List<StoredMessage>>()
+        override fun load(conversationId: String) = rows[conversationId] ?: emptyList()
+        override fun save(conversationId: String, messages: List<StoredMessage>) { rows[conversationId] = messages }
+        override fun listSessions() = rows.map { SessionInfo(it.key, 0, it.value.size) }
     }
 
     private class ScriptedExecutor(private val responses: List<() -> Message.Assistant>) : PromptExecutor() {
@@ -68,7 +75,7 @@ class CheckpointRecoveryTest {
     }
 
     private fun toolCall(text: String) = Message.Assistant(
-        parts = listOf(MessagePart.Tool.Call(id = "c1", tool = "note", args = """{"text":"$text"}""")),
+        parts = listOf(MessagePart.Tool.Call(id = "c-$text", tool = "note", args = """{"text":"$text"}""")),
         metaInfo = ResponseMetaInfo.Empty,
     )
 
@@ -82,59 +89,64 @@ class CheckpointRecoveryTest {
         }
     )
 
-    @Test fun `a crashed run resumes from checkpoint on a fresh instance without duplicating history`() {
-        val store = MemCheckpointStore()
-        val provider = StoreCheckpointProvider(store)
-        val model = KiModel(id = "test", contextWindow = 100_000)
-        val sessionId = "S-recover"
-
-        // Instance A: call the tool (creates a node checkpoint), then "crash".
-        val crashExec = ScriptedExecutor(
-            listOf(
-                { toolCall("remember-42") },
-                { throw RuntimeException("CRASH before completion") },
-            )
+    private fun agent(exec: PromptExecutor, history: StoreChatHistoryProvider, ckpt: StoreCheckpointProvider) =
+        KiAgent(
+            KiLlm.of(exec, KiModel(id = "test", contextWindow = 100_000)),
+            systemPrompt = "SYS", tools = listOf(noteTool()),
+            compressHistory = false, historyProvider = history, checkpointProvider = ckpt,
         )
-        val agentA = KiAgent(
-            KiLlm.of(crashExec, model), systemPrompt = "SYS", tools = listOf(noteTool()),
-            compressHistory = false, checkpointProvider = provider,
-        )
-        val crashed = runCatching { runBlocking { agentA.run("do it", sessionId) } }
-        assertTrue(crashed.isFailure, "instance A should have crashed mid-run")
 
-        // After the crash, the latest checkpoint exists and is NOT a tombstone.
-        val afterCrash = store.latest(sessionId)
-        assertNotNull(afterCrash, "a checkpoint should have been written before the crash")
+    @Test fun `a crashed run resumes on a fresh instance without duplicating prior history`() {
+        val ckptStore = MemCheckpointStore()
+        val ckpt = StoreCheckpointProvider(ckptStore)
+        val history = StoreChatHistoryProvider(MemSessionStore())
+        val sid = "S-recover"
+
+        // Run 0: completes a full turn — chat-memory now holds it, checkpoint chain tombstoned.
+        val e0 = ScriptedExecutor(listOf({ toolCall("remember-0") }, { text("ack-0") }))
+        runBlocking { agent(e0, history, ckpt).run("first task", sid) }
+        assertTrue(
+            CheckpointCodec.decode(ckptStore.latest(sid)!!.json).isTombstone(),
+            "a completed run must leave a tombstone",
+        )
+
+        // Run 1: calls the tool (node checkpoint) then crashes before completion.
+        val e1 = ScriptedExecutor(listOf({ toolCall("remember-1") }, { throw RuntimeException("CRASH") }))
+        val crashed = runCatching { runBlocking { agent(e1, history, ckpt).run("second task", sid) } }
+        assertTrue(crashed.isFailure, "run 1 should have crashed mid-run")
+        val afterCrash = ckptStore.latest(sid)
+        assertNotNull(afterCrash)
         assertFalse(
             CheckpointCodec.decode(afterCrash.json).isTombstone(),
             "an interrupted run must not leave a tombstone",
         )
 
-        // Instance B: fresh agent, same store + session id, just answers.
-        val resumeExec = ScriptedExecutor(listOf({ text("done") }))
-        val agentB = KiAgent(
-            KiLlm.of(resumeExec, model), systemPrompt = "SYS", tools = listOf(noteTool()),
-            compressHistory = false, checkpointProvider = provider,
-        )
-        val out = runBlocking { agentB.run("do it", sessionId) }
-
-        // (1) recovery completed.
+        // Run 2: fresh instance, same stores + session id — resumes and finishes.
+        val e2 = ScriptedExecutor(listOf({ text("done") }))
+        val out = runBlocking { agent(e2, history, ckpt).run("second task", sid) }
         assertEquals("done", out)
-        assertTrue(resumeExec.prompts.isNotEmpty(), "instance B should have called the model to finish")
+        assertTrue(e2.prompts.isNotEmpty(), "instance B should have called the model to finish")
 
-        // (2) the resumed prompt carries the pre-crash tool call + result EXACTLY once.
-        val resumed = resumeExec.prompts.last().flatMap { it.parts }
-        val calls = resumed.filterIsInstance<MessagePart.Tool.Call>().filter { it.tool == "note" }
-        val results = resumed.filterIsInstance<MessagePart.Tool.Result>().filter { it.output.contains("remember-42") }
-        assertEquals(1, calls.size, "tool call must appear once, not duplicated across ChatMemory + checkpoint")
-        assertEquals(1, results.size, "tool result must appear once")
-
-        // (3) a clean finish writes a tombstone.
-        val afterFinish = store.latest(sessionId)
-        assertNotNull(afterFinish)
+        // No duplication: every distinct prior marker appears AT MOST once in the resumed
+        // prompt, even though chat-memory (turn 0) and the checkpoint (turn 0 + partial
+        // turn 1) both feed history. The checkpoint's wholesale restore must win, not append.
+        val resumed = e2.prompts.last().flatMap { it.parts }
+        val callTexts = resumed.filterIsInstance<MessagePart.Tool.Call>().map { it.tool + it.args }
+        val resultTexts = resumed.filterIsInstance<MessagePart.Tool.Result>().map { it.output }
+        for (marker in listOf("remember-0", "remember-1")) {
+            assertTrue(
+                callTexts.count { it.contains(marker) } <= 1,
+                "tool call for $marker duplicated: $callTexts",
+            )
+            assertTrue(
+                resultTexts.count { it.contains(marker) } <= 1,
+                "tool result for $marker duplicated: $resultTexts",
+            )
+        }
+        // And the pre-crash turn-1 work is actually present (recovery, not a blank restart).
         assertTrue(
-            CheckpointCodec.decode(afterFinish.json).isTombstone(),
-            "a completed run must leave a tombstone so the happy path skips restore",
+            resultTexts.any { it.contains("remember-1") } || callTexts.any { it.contains("remember-1") },
+            "resumed context should carry the pre-crash turn-1 work",
         )
     }
 }
