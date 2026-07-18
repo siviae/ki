@@ -43,7 +43,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M6 | Context & token management | ✅ Done |
 | M7 | TUI: slash commands, cancel, cost | ✅ Done (streaming deferred) |
 | M8 | Robustness: retry, tool-errors, process-kill, logging | ✅ Done (checkpoints split to M9) |
-| M9 | Persistence: checkpoints, crash recovery & resume | ◐ Checkpoint spine done; live `/resume` re-seed left |
+| M9 | Persistence: checkpoints, crash recovery & resume | ✅ Done |
 | M10 | Distributed multi-node ki (Spring/Postgres) | ▢ Planned |
 | M11 | RocketChat bot reference implementation | ▢ Planned |
 | M12 | Packaging & distribution | ▢ Planned (was M9) |
@@ -768,7 +768,19 @@ store), build.
   `SqliteCheckpointStoreTest` (round-trip / version-ordering / tombstone-in-latest /
   upsert / delete / shared-connection coexistence). `./gradlew build` green, 171 tests.
 
-**Still open:** live in-session `/resume` re-seed (below) — a second increment.
+### Delivered (live `/resume` re-seed — second increment)
+
+- **`/resume [id]`** switches the active session **in place**: `KiController` holds a
+  mutable `activeSessionId` (the key handed to `agent.run`); swapping it makes koog's
+  chat-memory reload that conversation's history on the next turn — **no agent rebuild**,
+  no restart. `/resume` with no id lists resumable sessions (newest first, msg counts,
+  current marked); an unknown id is rejected without switching. `SlashAction.Resume(id?)`
+  keeps the dispatcher pure; `configSummary` reflects the active id.
+- **Verified:** `KiControllerTest` (list / switch-in-place / unknown-id-no-switch) +
+  `SlashCommandsTest` resume dispatch. `./gradlew build` green, **175 tests**.
+
+**M9 complete.** Transcript catch-up on resume (re-rendering prior turns into the TUI
+scrollback, distinct from the model-context re-seed done here) is a small M13 UI follow-up.
 
 ### What M4 already ships vs. the delta here
 

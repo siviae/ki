@@ -17,6 +17,13 @@ class KiController(private val session: KiSession) : SlashContext {
 
     private var agent: KiAgent = buildAgent(session.llm)
 
+    /**
+     * The session id the next turn runs under. `/resume <id>` swaps it in place; koog's
+     * chat-memory then reloads that conversation's history on the next `run` (M9). Mutable
+     * so a resume needs no agent rebuild — only the key handed to `agent.run` changes.
+     */
+    private var activeSessionId: String = session.sessionId
+
     private fun buildAgent(llm: KiLlm): KiAgent = KiAgent(
         llm = llm,
         systemPrompt = session.systemPrompt,
@@ -26,8 +33,29 @@ class KiController(private val session: KiSession) : SlashContext {
         checkpointProvider = session.checkpointProvider,
     )
 
-    /** Run a turn under the persistent session id. */
-    suspend fun run(input: String): String = agent.run(input, session.sessionId)
+    /** Run a turn under the active (possibly resumed) session id. */
+    suspend fun run(input: String): String = agent.run(input, activeSessionId)
+
+    /**
+     * Live resume. With no [id], list resumable sessions; with an [id], switch the active
+     * session in place so the next turn continues that conversation (history reloaded by
+     * chat-memory) without a restart. Returns a status line for the transcript.
+     */
+    fun resume(id: String?): String {
+        val sessions = session.store.listSessions()
+        if (id == null) {
+            if (sessions.isEmpty()) return "No saved sessions to resume."
+            val list = sessions.take(10).joinToString("\n") { s ->
+                val marker = if (s.conversationId == activeSessionId) " (current)" else ""
+                "  ${s.conversationId}  — ${s.messageCount} msgs$marker"
+            }
+            return "Resumable sessions (newest first):\n$list\n\nSwitch with: /resume <id>"
+        }
+        val target = sessions.firstOrNull { it.conversationId == id }
+            ?: return "No session '$id'. Use /resume to list saved sessions."
+        activeSessionId = id
+        return "Resumed session $id (${target.messageCount} messages). Your next message continues it."
+    }
 
     // --- SlashContext ---------------------------------------------------------
     override fun model(): String = agent.modelId
@@ -37,7 +65,7 @@ class KiController(private val session: KiSession) : SlashContext {
         appendLine("model:   ${agent.modelId}")
         appendLine("baseUrl: ${session.config.baseUrl}")
         appendLine("window:  ${session.config.contextWindow}")
-        append("session: ${session.sessionId}")
+        append("session: $activeSessionId")
     }
 
     // --- Status-line inputs ---------------------------------------------------

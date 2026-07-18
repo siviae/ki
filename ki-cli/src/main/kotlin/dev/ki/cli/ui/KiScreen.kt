@@ -68,6 +68,7 @@ class KiScreen(
             is SlashAction.Clear -> { transcript.clear() }
             is SlashAction.Quit -> { tui.stop(); return }
             is SlashAction.SwitchModel -> { echo(text); appendLine(controller.switchModel(action.name)); status.set(idleStatus()) }
+            is SlashAction.Resume -> { echo(text); appendLine(controller.resume(action.id)); status.set(idleStatus()) }
             is SlashAction.Unknown -> { echo(text); appendLine("Unknown command /${action.name}. Try /help.") }
         }
         tui.requestRender()

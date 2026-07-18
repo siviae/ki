@@ -18,6 +18,8 @@ sealed interface SlashAction {
     data object Quit : SlashAction
     /** Switch the active model to [name]. */
     data class SwitchModel(val name: String) : SlashAction
+    /** Resume a session in place: [id] to switch to it, or null to list resumable sessions. */
+    data class Resume(val id: String?) : SlashAction
     /** Not a slash command — send [text] to the agent as a normal prompt. */
     data class NotACommand(val text: String) : SlashAction
     /** An unrecognized `/name`. */
@@ -36,7 +38,7 @@ object SlashCommands {
           /model [name]    show the current model (+ catalog), or switch to <name>
           /tools           list the loaded tools
           /config          show effective configuration
-          /resume          how to resume a session
+          /resume [id]     list resumable sessions, or switch to <id> in place
           /clear           clear the transcript
           /quit            exit ki
     """.trimIndent()
@@ -58,7 +60,7 @@ object SlashCommands {
             "model" -> if (arg.isEmpty())
                 SlashAction.Show("Model: ${ctx.model()}\nCatalog: " + ctx.modelCatalog().joinToString(", ").ifEmpty { "(none)" })
             else SlashAction.SwitchModel(arg)
-            "resume" -> SlashAction.Show("Resume a session by restarting: ki --resume <id>  (or --continue).")
+            "resume" -> SlashAction.Resume(arg.ifEmpty { null })
             else -> SlashAction.Unknown(cmd)
         }
     }

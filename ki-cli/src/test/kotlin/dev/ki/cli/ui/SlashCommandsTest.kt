@@ -27,6 +27,11 @@ class SlashCommandsTest {
         assertEquals(SlashAction.Quit, dispatch("/q"))
     }
 
+    @Test fun `resume with no arg lists, resume with id switches`() {
+        assertEquals(null, assertIs<SlashAction.Resume>(dispatch("/resume")).id)
+        assertEquals("abc-123", assertIs<SlashAction.Resume>(dispatch("/resume abc-123")).id)
+    }
+
     @Test fun `tools lists registered tools`() {
         assertTrue(assertIs<SlashAction.Show>(dispatch("/tools")).text.contains("bash"))
     }
