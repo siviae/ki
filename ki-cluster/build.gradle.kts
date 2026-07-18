@@ -13,9 +13,13 @@ dependencies {
     implementation(libs.spring.context)
 
     testImplementation(kotlin("test"))
-    // Exercise the JdbcTemplate impl offline against an embedded SQLite DataSource;
+    // Exercise the JdbcTemplate storage impls offline against an embedded SQLite DataSource;
     // the same portable DDL/SQL runs on a host's Postgres in production.
     testImplementation(libs.sqlite.jdbc)
+    // Coordination (advisory locks, steering) is Postgres-only — the IT spins a real
+    // Postgres via Testcontainers and self-skips when Docker/KI_IT is absent.
+    testImplementation(libs.postgresql)
+    testImplementation(libs.testcontainers.postgresql)
 }
 
 tasks.test {

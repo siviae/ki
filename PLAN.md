@@ -44,7 +44,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M7 | TUI: slash commands, cancel, cost | ✅ Done (streaming deferred) |
 | M8 | Robustness: retry, tool-errors, process-kill, logging | ✅ Done (checkpoints split to M9) |
 | M9 | Persistence: checkpoints, crash recovery & resume | ✅ Done |
-| M10 | Distributed multi-node ki (Spring/Postgres) | ▢ Planned |
+| M10 | Distributed multi-node ki (Spring/Postgres) | ◐ Coordination primitives done; failover loop left |
 | M11 | RocketChat bot reference implementation | ▢ Planned |
 | M12 | Packaging & distribution | ▢ Planned (was M9) |
 | M13 | Live streaming & interactive TUI | ▢ Planned (was M10) |
@@ -854,11 +854,39 @@ up and fed to the model by the node currently working the session. *(This is the
 never the local SQLite/CLI path.)*
 
 **Modules:** ki-agent (session-ownership + steering-input **seams** only — no Spring),
-**new `ki-cluster` or into `ki-store-spring`** (all coordination: advisory locks,
-Postgres queues, LISTEN/NOTIFY), a host Spring app (wiring). **Module boundary is an
-acceptance criterion** (per M4): `:ki-cli:dependencies` must still show **no spring /
-no postgres**. Coordination code lives only in the Spring-side module; ki-agent exposes
-interfaces, the Postgres module implements them — same SPI discipline as M4.
+**`ki-cluster`** (the renamed `ki-store-spring` — now holds storage impls *and* all
+coordination: advisory locks, Postgres queues, LISTEN/NOTIFY), a host Spring app (wiring).
+**Module boundary is an acceptance criterion** (per M4): `:ki-cli:dependencies` must still
+show **no spring / no postgres**. Coordination code lives only in `ki-cluster`; ki-agent
+exposes interfaces, the Postgres module implements them — same SPI discipline as M4.
+
+### Delivered (coordination primitives — as built)
+
+- **Seams in ki-agent** (`dev.ki.store`): `SessionOwnership` (`tryClaim`/`release`/
+  `isOwner`/`owned`) and `SteeringInbox` (`write` from any node, `drain` by the owner) +
+  `SteeringMessage`. Pure interfaces, no Spring — the CLI never sees them.
+- **`AdvisoryLockSessionOwnership`** (ki-cluster, `dev.ki.cluster`): session-level
+  `pg_try_advisory_lock` on a **dedicated autocommit connection per owned session** (held in
+  a map, released + returned on `release`/`close`); claims serialized so one node never
+  double-connects a session. `AdvisoryKeys` derives a stable 64-bit lock key from the
+  session id via SHA-256 (not 32-bit `hashCode`) so every node computes the same key.
+- **`JdbcSteeringInbox`** (ki-cluster): `ki_steering` table; `drain` is an atomic
+  take-and-mark via `UPDATE … WHERE consumed_at IS NULL RETURNING` (row-locks matched rows,
+  so a racing drain gets nothing), results sorted by seq. Single-statement writes = short
+  transactions. `SteeringInbox` registered as a Spring bean; `SessionOwnership` deliberately
+  **not** auto-wired (needs a dedicated `DataSource`, documented on the config).
+- **Verified — offline:** `AdvisoryKeysTest` (determinism + a pinned cross-node constant).
+  `CoordinationIT` (advisory-lock mutual exclusion, **auto-release on a dropped owner
+  connection** = the failover primitive, steering drain-once-in-order) is written against a
+  **Testcontainers Postgres** but **self-skips without `KI_IT`+Docker — its runtime behavior
+  is not yet exercised in CI** (advisory locks are Postgres-only; SQLite can't cover them).
+  `./gradlew build` green.
+
+**Still open (the larger half): the failover orchestration loop** — the glue that, per node,
+claims sessions, resumes an owned session from its latest M9 checkpoint, drains steering into
+the running `KiAgent` at step boundaries (via `runFromCheckpoint`), and releases on
+completion. Plus the two-node crash-takeover IT and the LISTEN/NOTIFY optimization. This is
+where the RocketChat (M11) use-case shapes the exact loop.
 
 ### Decision A — coordination via **session-level** advisory locks (not xact locks)
 

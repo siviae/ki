@@ -10,6 +10,8 @@ jackson = "2.18.2" # prod serializer: our own config/manifest/catalog types (not
 spring = "6.2.1" # spring-jdbc/context for the optional ki-cluster module only
 kotlinLogging = "8.0.01" # matches koog's transitive version; slf4j-2 facade
 logback = "1.5.12" # slf4j-2 backend; ki-cli only (the app owns the log sink)
+postgresql = "42.7.4" # ki-cluster tests/IT only; host app provides the driver in prod
+testcontainers = "1.20.4" # ki-cluster advisory-lock/steering IT (needs Docker; self-skips)
 
 [libraries]
 koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
@@ -31,6 +33,11 @@ jackson-dataformat-toml = { module = "com.fasterxml.jackson.dataformat:jackson-d
 # Spring — remote store + distributed coordination reference impl (ki-cluster only)
 spring-jdbc = { module = "org.springframework:spring-jdbc", version.ref = "spring" }
 spring-context = { module = "org.springframework:spring-context", version.ref = "spring" }
+
+# Postgres driver + Testcontainers — ki-cluster coordination IT only (advisory locks are
+# Postgres-only, so these can't be covered by the offline SQLite tests)
+postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
+testcontainers-postgresql = { module = "org.testcontainers:postgresql", version.ref = "testcontainers" }
 
 # Logging — kotlin-logging facade (all modules) + logback backend (ki-cli sink)
 kotlin-logging = { module = "io.github.oshai:kotlin-logging-jvm", version.ref = "kotlinLogging" }
