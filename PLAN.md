@@ -42,7 +42,8 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M5 | Tool permissions & approval | ▢ Deferred (yolo mode for now) |
 | M6 | Context & token management | ✅ Done |
 | M7 | TUI: slash commands, cancel, cost | ✅ Done (streaming deferred) |
-| M8 | Robustness, errors & recovery | ▢ Planned |
+| M8 | Robustness: retry, tool-errors, process-kill, logging | ✅ Done (checkpoints split to M8b) |
+| M8b | Agent-persistence checkpoints & crash recovery | ▢ Deferred (own pass) |
 | M9 | Packaging & distribution | ▢ Planned |
 | M10 | Live streaming & interactive TUI | ▢ Planned |
 | M11 | Tool suite completion | ▢ Planned |
@@ -666,36 +667,87 @@ green (change was additive).
 
 ---
 
-## M8 — Robustness, errors & recovery
+## M8 — Robustness: retry, tool-errors, process-kill, logging ✅ DONE
 
-**Goal:** survive flaky networks, bad inputs, and crashes without dying or corrupting
-a session. *(Existing M8 + carried: process-tree kill from M3; agent-persistence
-checkpoints deferred from M4 and flagged by M6.)*
+**Goal:** survive flaky networks, bad inputs, and runaway subprocesses without dying
+or corrupting a session. *(Existing M8 + process-tree kill carried from M3.
+Agent-persistence checkpoints split out to M8b as their own pass.)*
 
-**Modules:** ki-ai (retry/backoff), ki-agent (tool-error handling, checkpoints,
-process kill), ki-cli (logging, flags), build.
+**Delivered**
+- **LLM-call retry with exponential backoff** (`ki-ai` `RetryingPromptExecutor`,
+  commit `3101705`). Wraps the `PromptExecutor`; retries transient failures — 5xx,
+  408/425, rate-limit (429), and bare network I/O — with full-jitter backoff; fails
+  fast on auth/bad-request (401/403/400/404/422). Classifier walks the cause chain for
+  koog's `KoogHttpClientException(statusCode)`. Only the non-streaming `execute`
+  paths retry (a streaming `Flow` has no safe restart point → deferred to M10).
+- **Tool-error recovery** (test-pinned, commit `d7a683d`). Verified koog's
+  `GenericAgentEnvironment` already converts a thrown tool exception, an unknown tool,
+  and bad-args into an error tool-result instead of crashing the loop — so no
+  redundant try/catch was added; `ToolErrorRecoveryTest` pins the contract.
+- **Process-tree kill for `bash`** *(M3 deferral)* (`ki-agent` `BashExec.killTree`,
+  commit `d56bc22`). `NuProcess.destroy` targets only the shell pid, so a `cmd &`
+  grandchild reparents to init and survives; `killTree` snapshots the descendants
+  *before* destroying the shell and force-kills each. `ProcessHandle` over `setsid`
+  (portable on darwin, no external tool).
+- **Structured file logging** (`ki-cli`, commit `240bdcc`). kotlin-logging facade +
+  logback backend (ki-cli only); rolling file under `.ki/logs/`, never the console
+  (the TUI owns the screen). `--debug` → DEBUG, `--verbose` → INFO, else WARN, via
+  `KI_LOG_LEVEL`/`KI_LOG_DIR` system properties set before logback init.
+
+**Verified**
+- Injected 500 retried then succeeds; 401 fails fast without retry; retries bounded by
+  `maxAttempts`; network `IOException` treated transient (`RetryingPromptExecutorTest`).
+- A tool that throws yields an error tool-result on the next-turn prompt and the agent
+  recovers to a final answer (`ToolErrorRecoveryTest`).
+- A `bash` command holding a backgrounded child is fully reaped on timeout — the
+  child's pid is dead (`BashExecTest`; survives without the fix).
+- The shipped `logback.xml` writes a file to the configured dir; flag→level mapping and
+  logs-sibling-of-db resolution (`LoggingTest`).
+
+**Corrections vs. the original plan**
+- Retry decorator assumed exceptions propagate — *verified*: koog throws
+  `KoogHttpClientException` carrying `statusCode`; no `Retry-After` header survives, so
+  429 backs off exponentially rather than by server hint.
+- Tool-error handling turned out to be framework-native (koog), so this became a
+  test-pin, not new code.
+- Cancel-path reaping (vs. timeout) runs through AgentBridge coroutine-cancel, not
+  `BashExec`; only the timeout path is wired/tested here (cancel → M10).
+
+<details><summary>Original plan (superseded)</summary>
+
+Deliverables: retry/backoff; tool-error capture + malformed-args→corrective message;
+process-tree kill (proposed `setsid`); agent-persistence checkpoints; structured
+logging. Acceptance included "with checkpoints on, killing the process mid-run and
+restarting recovers the run" — moved to M8b.
+</details>
+
+---
+
+## M8b — Agent-persistence checkpoints & crash recovery
+
+**Goal:** opt-in mid-run snapshots so a killed process can resume, and the **raw
+transcript** that M6 compaction overwrites in history is preserved. *(M4 Decision A
+"secondary role"; M6 flagged the gap. Split from M8: koog ships the machinery
+(`agents-features-snapshot`: `Persistence` feature, `PersistenceStorageProvider`,
+`AgentCheckpointData`), but wiring + a crash-recovery IT is a milestone on its own.)*
+
+**Modules:** ki-agent (install `Persistence`, checkpoint SPI), ki-cli + ki-store-spring
+(checkpoint storage), build.
 
 **Deliverables**
-- LLM-call retries with exponential backoff on transient (5xx / network) errors;
-  surface rate-limit (429) with backoff; fail fast on auth (401/403).
-- Tool errors captured and returned to the model as tool results — never crash the
-  loop. Malformed tool-call args (from the model) validated → corrective message back
-  to the model rather than an exception.
-- **Process-tree kill for `bash`** *(M3 deferral)* — `destroy` kills the shell but
-  detached grandchildren can survive; kill the process group / use `setsid` so a
-  timed-out or cancelled command leaves nothing running.
-- **Agent-persistence checkpoints** *(M4 Decision A "secondary role"; M6 flagged the
-  gap)* — an opt-in second `SessionStore`-backed koog `Persistence` provider snapshots
-  mid-run graph state for crash-recovery / rollback, and preserves the **raw
-  transcript** that M6 compaction overwrites in history. Default off.
-- Structured logging (levels → `.ki/logs/`), `--verbose` / `--debug`.
+- A `PersistenceStorageProvider` backed by a new checkpoint table (SQLite locally,
+  JdbcTemplate remotely) alongside the existing message store; koog `AgentCheckpointData`
+  serialized with koog Json (same opaque-blob discipline as `MessageCodec`).
+- `install(Persistence)` in `KiAgent`, default off; config for continuous vs. on-demand
+  snapshots.
+- Recovery: on restart with checkpoints on, load the latest checkpoint and roll the
+  agent context back to it.
+- Preserve the pre-compaction raw transcript for audit/rollback.
 
 **Acceptance**
-- Injected transient failure → retried then succeeds (failing-then-ok stub executor).
-- A tool that throws yields an error tool-result and the agent recovers.
-- A `bash` command that spawns a background child is fully reaped on timeout/cancel
-  (no surviving PID).
-- With checkpoints on, killing the process mid-run and restarting recovers the run.
+- With checkpoints on, killing the process mid-run and restarting recovers the run
+  (fork-a-process integration test).
+- Raw transcript survives an M6 compaction.
 
 ---
 
