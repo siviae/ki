@@ -85,6 +85,10 @@ class RetryingPromptExecutorTest {
             RetryingPromptExecutor.isTransient(RuntimeException("wrap", IOException("reset"))),
             "transient cause deep in the chain still counts",
         )
+        // The real path: the OpenAI client rewraps the ktor KoogHttpClientException in
+        // an outer exception, so the status must still be found through the cause chain.
+        assertTrue(RetryingPromptExecutor.isTransient(RuntimeException("wrap", KoogHttpClientException(statusCode = 500))))
+        assertFalse(RetryingPromptExecutor.isTransient(RuntimeException("wrap", KoogHttpClientException(statusCode = 401))))
         assertFalse(RetryingPromptExecutor.isTransient(KoogHttpClientException(statusCode = 401)))
         assertFalse(RetryingPromptExecutor.isTransient(IllegalArgumentException("bad prompt")))
     }

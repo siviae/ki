@@ -10,8 +10,6 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.runBlocking
 import kotlin.system.exitProcess
 
-private val log = KotlinLogging.logger {}
-
 private val SYSTEM_PROMPT = """
     You are ki, a terse coding agent. Use the provided tools to work in the repo:
     read and write files, edit with exact text replacement, list directories, grep,
@@ -20,8 +18,12 @@ private val SYSTEM_PROMPT = """
 
 fun main(argv: Array<String>) {
     val args = CliArgs.parse(argv)
-    // Must precede any logger use so logback picks up level + dir on first init.
+    // Must precede the first logger acquisition so logback resolves level + dir from
+    // these properties on init. Acquiring the logger below (not at top level) is what
+    // guarantees that ordering — a file-level `val logger` would initialize logback in
+    // <clinit>, before this runs, and the flags would be silently ignored.
     Logging.configure(args, args.dbPath)
+    val log = KotlinLogging.logger {}
 
     val session = try {
         Bootstrap.build(args, SYSTEM_PROMPT)
