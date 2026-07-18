@@ -18,12 +18,20 @@ import java.sql.DriverManager
  */
 class SqliteSessionStore(dbPath: Path) : SessionStore, AutoCloseable {
 
-    private val connection: Connection
+    /**
+     * Shared with [dev.ki.cli.store.SqliteCheckpointStore] so both SPIs use one SQLite
+     * connection — a second connection to the same file would contend (checkpoints write
+     * after every node, sessions at turn end) and SQLite's default `busy_timeout` is 0.
+     * Both stores synchronize on this object, so it is the single write monitor.
+     */
+    internal val connection: Connection
 
     init {
         dbPath.toAbsolutePath().parent?.let { Files.createDirectories(it) }
         connection = DriverManager.getConnection("jdbc:sqlite:$dbPath")
         connection.createStatement().use { st ->
+            // Wait rather than fail if the connection is momentarily busy.
+            st.execute("PRAGMA busy_timeout = 5000")
             st.executeUpdate(
                 """
                 CREATE TABLE IF NOT EXISTS ki_message (
@@ -47,8 +55,7 @@ class SqliteSessionStore(dbPath: Path) : SessionStore, AutoCloseable {
         }
     }
 
-    @Synchronized
-    override fun load(conversationId: String): List<StoredMessage> {
+    override fun load(conversationId: String): List<StoredMessage> = synchronized(connection) {
         val out = ArrayList<StoredMessage>()
         connection.prepareStatement(
             "SELECT seq, role, message_json FROM ki_message WHERE conversation_id = ? ORDER BY seq"
@@ -63,8 +70,7 @@ class SqliteSessionStore(dbPath: Path) : SessionStore, AutoCloseable {
         return out
     }
 
-    @Synchronized
-    override fun save(conversationId: String, messages: List<StoredMessage>) {
+    override fun save(conversationId: String, messages: List<StoredMessage>): Unit = synchronized(connection) {
         val now = System.currentTimeMillis()
         val autoCommit = connection.autoCommit
         connection.autoCommit = false
@@ -99,8 +105,7 @@ class SqliteSessionStore(dbPath: Path) : SessionStore, AutoCloseable {
         }
     }
 
-    @Synchronized
-    override fun listSessions(): List<SessionInfo> {
+    override fun listSessions(): List<SessionInfo> = synchronized(connection) {
         val out = ArrayList<SessionInfo>()
         connection.createStatement().use { st ->
             st.executeQuery(

@@ -23,6 +23,7 @@ class KiController(private val session: KiSession) : SlashContext {
         tools = session.tools,
         historyProvider = session.historyProvider,
         usageMeter = session.usageMeter,
+        checkpointProvider = session.checkpointProvider,
     )
 
     /** Run a turn under the persistent session id. */

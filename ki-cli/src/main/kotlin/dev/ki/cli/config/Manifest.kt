@@ -53,7 +53,12 @@ data class LlmSection(
     val model: String? = null,
 )
 
-data class DbSection(val path: String = "./.ki/ki.db")
+/**
+ * [checkpoints] opts into M9 agent-persistence: koog snapshots graph state after each
+ * node so a process killed mid-turn resumes from the last node (not just the last
+ * completed turn). Off by default — extra write per node; enable for crash-prone runs.
+ */
+data class DbSection(val path: String = "./.ki/ki.db", val checkpoints: Boolean = false)
 
 data class ContextSection(val files: List<String> = emptyList())
 

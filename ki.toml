@@ -14,6 +14,9 @@ api_key_env = "LITELLM_API_KEY"
 [db]
 # Local, lightweight deployment: an embedded SQLite file. No server, no Spring.
 path = ".ki/ki.db"
+# M9 crash recovery: snapshot graph state after each node so a process killed mid-turn
+# resumes from the last node, not just the last completed turn. Off by default.
+# checkpoints = true
 
 [context]
 # Instruction files prepended to the system prompt, in order (e.g. ["KI.md"]).

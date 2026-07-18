@@ -43,7 +43,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M6 | Context & token management | ✅ Done |
 | M7 | TUI: slash commands, cancel, cost | ✅ Done (streaming deferred) |
 | M8 | Robustness: retry, tool-errors, process-kill, logging | ✅ Done (checkpoints split to M9) |
-| M9 | Persistence: checkpoints, crash recovery & resume | ▢ Planned (was M8b) |
+| M9 | Persistence: checkpoints, crash recovery & resume | ◐ Checkpoint spine done; live `/resume` re-seed left |
 | M10 | Distributed multi-node ki (Spring/Postgres) | ▢ Planned |
 | M11 | RocketChat bot reference implementation | ▢ Planned |
 | M12 | Packaging & distribution | ▢ Planned (was M9) |
@@ -743,6 +743,32 @@ builds on** — the checkpoint SPI it lands is exactly what M10 fails over acros
 **Modules:** ki-agent (install `Persistence`, checkpoint SPI seam), ki-cli
 (SQLite checkpoint store + `/resume` re-seed), ki-store-spring (JdbcTemplate checkpoint
 store), build.
+
+### Delivered (checkpoint spine — as built)
+
+- **`CheckpointStore` SPI + `StoredCheckpoint`** in ki-agent (`dev.ki.store`), mirroring
+  the M4 `SessionStore` pattern; **`CheckpointCodec`** (koog `AgentCheckpointData` ⇄ JSON
+  via koog's `PersistenceUtils.defaultCheckpointJson`) is the checkpoint counterpart to
+  `MessageCodec` — the only koog-checkpoint-serialization touch point; **`StoreCheckpointProvider`**
+  adapts the SPI to koog's `PersistenceStorageProvider<AgentCheckpointPredicateFilter>`.
+- **`KiAgent`** installs `Persistence` (`enableAutomaticPersistence`) when a
+  `checkpointProvider` is supplied, **default off**. Recovery is automatic: koog's
+  `rollbackToLatestCheckpoint` on strategy start restores an interrupted run; a clean run
+  writes a **tombstone** whose `toAgentContextData()` is null → no-op restore, so the
+  happy path is untouched and chat-memory handles history.
+- **`SqliteCheckpointStore`** (ki-cli) over the **same** SQLite connection as
+  `SqliteSessionStore` (shared write monitor + `busy_timeout=5000` — a 2nd connection
+  would contend, since checkpoints write per node); **`JdbcTemplateCheckpointStore`** +
+  bean (ki-store-spring). `[db].checkpoints = true` opts in via the manifest.
+- **Verified:** `CheckpointRecoveryTest` — **two agent instances** sharing one store +
+  session id (offline stand-in for kill-and-restart, and the M10 takeover primitive):
+  instance A calls a tool then crashes; instance B resumes and finishes; asserts the
+  pre-crash tool call + result appear in B's prompt **exactly once** (no ChatMemory ↔
+  checkpoint duplication), and the non-tombstone→tombstone lifecycle. Plus
+  `SqliteCheckpointStoreTest` (round-trip / version-ordering / tombstone-in-latest /
+  upsert / delete / shared-connection coexistence). `./gradlew build` green, 171 tests.
+
+**Still open:** live in-session `/resume` re-seed (below) — a second increment.
 
 ### What M4 already ships vs. the delta here
 

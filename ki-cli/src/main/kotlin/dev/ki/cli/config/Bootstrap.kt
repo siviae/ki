@@ -1,13 +1,16 @@
 package dev.ki.cli.config
 
 import ai.koog.agents.core.tools.ToolBase
+import ai.koog.agents.snapshot.providers.PersistenceStorageProvider
 import dev.ki.agent.context.UsageAccumulator
 import dev.ki.agent.tools.ScriptToolLoader
 import dev.ki.agent.tools.builtin.BuiltinTools
 import dev.ki.ai.KiConfig
 import dev.ki.ai.KiLlm
+import dev.ki.cli.store.SqliteCheckpointStore
 import dev.ki.cli.store.SqliteSessionStore
 import dev.ki.store.StoreChatHistoryProvider
+import dev.ki.store.StoreCheckpointProvider
 import java.nio.file.Path
 import java.util.UUID
 import kotlin.io.path.exists
@@ -21,6 +24,8 @@ class KiSession(
     val store: SqliteSessionStore,
     val historyProvider: StoreChatHistoryProvider,
     val sessionId: String,
+    /** M9 checkpoint provider when `[db].checkpoints` is on, else null (recovery off). */
+    val checkpointProvider: PersistenceStorageProvider<*>?,
     val oneShotPrompt: String?,
     /** Effective config (base for a `/model` rebuild). */
     val config: KiConfig,
@@ -50,8 +55,12 @@ object Bootstrap {
         val provider = StoreChatHistoryProvider(store)
         val sessionId = resolveSessionId(args, store)
 
+        // M9: checkpoints share the session store's SQLite connection (see SqliteCheckpointStore).
+        val checkpointProvider = if (manifest.db.checkpoints)
+            StoreCheckpointProvider(SqliteCheckpointStore(store.connection)) else null
+
         return KiSession(
-            llm, tools, systemPrompt, store, provider, sessionId, args.prompt,
+            llm, tools, systemPrompt, store, provider, sessionId, checkpointProvider, args.prompt,
             config = config, models = manifest.models, usageMeter = UsageAccumulator(),
         )
     }

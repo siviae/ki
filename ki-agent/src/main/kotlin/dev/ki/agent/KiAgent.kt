@@ -10,6 +10,8 @@ import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.ext.agent.HistoryCompressionConfig
 import ai.koog.agents.ext.agent.singleRunStrategyWithHistoryCompression
 import ai.koog.agents.features.eventHandler.feature.EventHandler
+import ai.koog.agents.snapshot.feature.Persistence
+import ai.koog.agents.snapshot.providers.PersistenceStorageProvider
 import ai.koog.prompt.Prompt
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.message.Message
@@ -33,6 +35,15 @@ import dev.ki.ai.KiLlm
  * are summarized into a TL;DR — the system prompt and the most recent
  * [keepLastMessages] messages are kept. [lastUsage] exposes the latest turn's
  * context usage for display.
+ *
+ * **M9 — crash recovery.** When a [checkpointProvider] is supplied, koog's `Persistence`
+ * feature snapshots graph state after each node. On a run started with a session id whose
+ * last run was **interrupted**, koog rolls the agent back to the latest checkpoint and
+ * continues from that node — so a killed process resumes mid-turn, not just from the last
+ * completed turn. On clean completion koog writes a tombstone, which deserializes to a
+ * no-op restore, so the happy path is unaffected and chat-memory handles history as usual.
+ * Default off (null provider); the raw pre-compaction transcript lives in the checkpoint
+ * blob even after M6 compaction overwrites the [historyProvider] rows.
  */
 class KiAgent(
     private val llm: KiLlm,
@@ -44,6 +55,7 @@ class KiAgent(
     keepLastMessages: Int = 20,
     contextBudgetRatio: Double = 0.7,
     private val usageMeter: UsageAccumulator? = null,
+    private val checkpointProvider: PersistenceStorageProvider<*>? = null,
 ) {
     private val tokenizer = KiTokenizer()
     private val window: Long = llm.defaultModel.contextWindow
@@ -100,6 +112,12 @@ class KiAgent(
         installFeatures = {
             historyProvider?.let { provider ->
                 install(ChatMemory) { chatHistoryProvider = provider }
+            }
+            checkpointProvider?.let { provider ->
+                install(Persistence) {
+                    storage = provider
+                    enableAutomaticPersistence = true
+                }
             }
             install(EventHandler) {
                 onLLMCallCompleted { ctx -> updateUsage(ctx.prompt, ctx.response) }
