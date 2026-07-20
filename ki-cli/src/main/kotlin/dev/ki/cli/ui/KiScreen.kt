@@ -35,6 +35,11 @@ class KiScreen(
     private val bridge = AgentBridge(scope, tui::post, controller::run)
     private var busy = false
 
+    // Every tool-call row ever added this session (across turns), so Ctrl-O can expand/collapse
+    // all of them at once — pi-style. Cleared by /clear along with the rest of the transcript.
+    private val allToolLines = mutableListOf<ToolCallLine>()
+    private var toolsExpanded = false
+
     init {
         tui.addChild(transcript)
         tui.addChild(Spacer(1))
@@ -51,6 +56,7 @@ class KiScreen(
                 Keys.matchesKey(data, Key.CTRL_Q) -> { tui.stop(); true }
                 Keys.matchesKey(data, Key.CTRL_C) -> { if (busy) cancel() else tui.stop(); true }
                 Keys.matchesKey(data, Key.ESCAPE) && busy -> { cancel(); true }
+                Keys.matchesKey(data, Key.CTRL_O) -> { toggleToolExpansion(); true }
                 else -> false
             }
         }
@@ -67,7 +73,7 @@ class KiScreen(
         when (val action = SlashCommands.dispatch(text, controller)) {
             is SlashAction.NotACommand -> { runTurn(action.text); return }
             is SlashAction.Show -> { echo(text); appendLine(action.text) }
-            is SlashAction.Clear -> { transcript.clear() }
+            is SlashAction.Clear -> { transcript.clear(); allToolLines.clear() }
             is SlashAction.Quit -> { tui.stop(); return }
             is SlashAction.SwitchModel -> { echo(text); appendLine(controller.switchModel(action.name)); status.set(idleStatus()) }
             is SlashAction.Resume -> { echo(text); appendLine(controller.resume(action.id)); status.set(idleStatus()) }
@@ -111,12 +117,21 @@ class KiScreen(
         when (event.phase) {
             ToolPhase.STARTING -> {
                 val line = ToolCallLine(event.name, event.args)
+                line.setExpanded(toolsExpanded)
                 lines[event.id] = line
+                allToolLines.add(line)
                 transcript.add(line)
             }
-            ToolPhase.OK -> lines[event.id]?.set(ToolCallLine.Phase.SUCCESS)
-            ToolPhase.ERROR -> lines[event.id]?.set(ToolCallLine.Phase.ERROR)
+            ToolPhase.OK -> lines[event.id]?.set(ToolCallLine.Phase.SUCCESS, event.result)
+            ToolPhase.ERROR -> lines[event.id]?.set(ToolCallLine.Phase.ERROR, event.result)
         }
+        tui.requestRender()
+    }
+
+    /** Ctrl-O: expand/collapse every tool-call row's result preview, this turn and past ones. */
+    private fun toggleToolExpansion() {
+        toolsExpanded = !toolsExpanded
+        allToolLines.forEach { it.setExpanded(toolsExpanded) }
         tui.requestRender()
     }
 
@@ -182,6 +197,12 @@ internal class ThinkingBlock : Component {
  * dark green on success, dark red on error. Ported from pi's `tool-execution.ts` /
  * `dark.json` (`toolPendingBg` #282832 / `toolSuccessBg` #283228 / `toolErrorBg` #3c2828),
  * emitted as truecolor. The bold title uses SGR-22 so it nests inside the stripe.
+ *
+ * Once the call lands (OK/ERROR) and carries a [result], a dimmed preview of up to
+ * [MAX_RESULT_LINES] wrapped lines is rendered below the stripe — the actual tool output,
+ * not just the pass/fail color. A result longer than that is capped with a
+ * "N more lines (ctrl-o to expand)" hint; [setExpanded] (wired to Ctrl-O in [KiScreen])
+ * shows the full output instead, pi-style.
  */
 internal class ToolCallLine(private val name: String, private val args: String) : Component {
     enum class Phase { PENDING, SUCCESS, ERROR }
@@ -189,7 +210,19 @@ internal class ToolCallLine(private val name: String, private val args: String) 
     @Volatile
     private var phase = Phase.PENDING
 
-    fun set(p: Phase) { phase = p }
+    @Volatile
+    private var result: String? = null
+
+    @Volatile
+    private var expanded = false
+
+    fun set(p: Phase, result: String? = null) {
+        phase = p
+        this.result = result
+    }
+
+    /** Toggle between the capped preview and the full result text (Ctrl-O). */
+    fun setExpanded(value: Boolean) { expanded = value }
 
     override fun render(width: Int): List<String> {
         val title = if (args.isBlank()) name else "$name($args)"
@@ -200,7 +233,27 @@ internal class ToolCallLine(private val name: String, private val args: String) 
             Phase.SUCCESS -> Triple(40, 50, 40)
             Phase.ERROR -> Triple(60, 40, 40)
         }
-        return listOf(Ansi.bgRgb(r, g, b, Ansi.boldIn(body)))
+        val stripe = Ansi.bgRgb(r, g, b, Ansi.boldIn(body))
+
+        val preview = result?.trim()?.takeIf { it.isNotEmpty() } ?: return listOf(stripe)
+        val wrapped = Width.wrapText(preview.replace("\t", "  "), (width - RESULT_INDENT.length).coerceAtLeast(1))
+
+        if (expanded || wrapped.size <= MAX_RESULT_LINES) {
+            return listOf(stripe) + wrapped.map { dimIndented(it, width) }
+        }
+
+        val shown = wrapped.take(MAX_RESULT_LINES - 1)
+        val hidden = wrapped.size - shown.size
+        val hint = "… $hidden more line${if (hidden == 1) "" else "s"} (ctrl-o to expand)"
+        return listOf(stripe) + shown.map { dimIndented(it, width) } + dimIndented(hint, width)
+    }
+
+    private fun dimIndented(text: String, width: Int): String =
+        Ansi.dim(Width.truncateToWidth(RESULT_INDENT + text, width, ellipsis = "…", pad = false))
+
+    private companion object {
+        const val RESULT_INDENT = "  "
+        const val MAX_RESULT_LINES = 6
     }
 }
 

@@ -23,6 +23,10 @@ class KeysTest {
         assertTrue(Keys.matchesKey(4.toChar().toString(), Key.CTRL_D))
     }
 
+    @Test fun `should match legacy Ctrl+o`() { // Ctrl+o sends ASCII 15 (SI) — pi-style expand toggle
+        assertTrue(Keys.matchesKey(15.toChar().toString(), Key.CTRL_O))
+    }
+
     @Test fun `should match escape key`() {
         assertTrue(Keys.matchesKey(esc, Key.ESCAPE))
     }

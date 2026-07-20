@@ -46,6 +46,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M9 | Persistence: checkpoints, crash recovery & resume | ✅ Done |
 | M9.1 | Streaming model reasoning (thinking) blocks to the terminal | ✅ Done |
 | M9.2 | Colored tool-call lines in the transcript (pi-style) | ✅ Done |
+| M9.3 | Tool-call result preview + Ctrl-O expand; koog double-encode fix | ✅ Done |
 | M10 | Distributed multi-node ki (Spring/Postgres) | ◐ Primitives + orchestration loop done (Postgres-verified); LISTEN/NOTIFY + real-agent e2e left |
 | M11 | RocketChat bot reference implementation | ◐ Designed (verified surface); build pending M10 loop |
 | M12 | Packaging & distribution | ▢ Planned (was M9) |
@@ -930,7 +931,63 @@ the terminal lacks truecolor).
 - **256-color fallback + terminal-capability / theme (dark/light) detection** — pi picks
   truecolor vs nearest-256 from capabilities and auto-detects background via OSC 11; ki has
   neither yet, so M9.2 emits **truecolor only**. Folded into M15 (rich rendering / theme).
-- Richer per-tool renderers (diffs, output folding, `⏺`/spinner states) stay in M13/M15.
+- Richer per-tool renderers (diffs, `⏺`/spinner states) stay in M13/M15. Output folding
+  shipped early, see M9.3 below.
+
+---
+
+## M9.3 — Tool-call result preview + Ctrl-O expand; koog double-encode fix  ✅ DONE
+
+**Trigger:** user-reported bug — the M9.2 tool-call row showed only the pass/fail color
+stripe, never the tool's actual output, so there was no way to see what `ls`/`read`/`bash`
+etc. actually returned without leaving the TUI. Separately, the *same* investigation
+surfaced a real koog 1.0.0-preview7 bug that had been blocking real tool-call turns
+end-to-end against the samokat LiteLLM proxy.
+
+### Delivered (as built — authoritative)
+- **`ToolCallEvent.result`** (ki-agent): koog's `onToolCallCompleted`/`onToolCallFailed`
+  already carry the tool's return value (`ctx.toolResult`, a koog `JSONElement`) and the
+  failure message (`ctx.message`) — previously discarded. Now forwarded: unwrapped via
+  `resultPreview()` (string primitive → raw content, else `.toString()`).
+- **`ToolCallLine` output preview** (ki-cli): once a call lands (OK/ERROR) with a
+  non-blank result, up to 6 dimmed, wrapped lines render beneath the stripe. Longer output
+  is capped with a `"N more lines (ctrl-o to expand)"` hint line instead of being silently
+  dropped.
+- **Ctrl-O expand, pi-style** (ki-tui + ki-cli): `Key.CTRL_O` (ASCII 15/SI) added to the
+  key table. `KiScreen` tracks every `ToolCallLine` created this session (`allToolLines`,
+  survives across turns, cleared by `/clear`) and a single `toolsExpanded` flag; Ctrl-O
+  toggles all of them at once between the capped preview and the full result text. No
+  per-row selection model exists in ki's scrollback TUI, so this is a session-wide toggle
+  rather than pi's per-row expand — matches the simpler transcript model.
+- **koog double-encode workaround** (ki-ai): `AbstractOpenAILLMClient.convertPromptToMessages`
+  (koog 1.0.0-preview7) re-JSON-encodes an already-encoded `MessagePart.Tool.Call.args` when
+  replaying a prior assistant tool call into request history, producing a doubly-quoted
+  `arguments` string. Confirmed against the real samokat proxy: doubly-encoded → 500
+  `litellm.InternalServerError ... 'str' object has no attribute 'items'` for
+  `deepseek-v4-flash`; correctly single-encoded → 200. `DoubleEncodedArgsWorkaroundClient`
+  subclasses `OpenAILLMClient`, overrides `serializeProviderChatRequest`, and unwraps the
+  extra quoting from `messages[].tool_calls[].function.arguments` before the request goes
+  over the wire. Drop this once koog fixes it upstream.
+- **Live opt-in integration test** (`ki-cli/BootstrapIntegrationTest`, `KI_IT=1`): loads the
+  real project `ki.toml` and drives a real turn — including a real tool call — against the
+  real proxy, so this exact class of bug is caught by running a test, not by manually
+  running `ki-cli` and reading a stack trace.
+
+### Verification
+- `ToolCallResultEventTest` (ki-agent): a real `KiAgent` run with a scripted executor
+  proves a successful `ls` call's real output reaches `ToolCallEvent.result`, and a tool
+  that throws surfaces its message on the `ERROR` event.
+- `ToolCallLineTest` (ki-cli): result preview shape, blank-result no-op, 6-line cap +
+  exact hint text, `setExpanded` shows the full result with no hint line, collapsing
+  re-caps, a short result is unaffected by expand, width contract holds both collapsed and
+  expanded.
+- `KeysTest` (ki-tui): Ctrl-O (ASCII 15) parses to `Key.CTRL_O`.
+- `DoubleEncodedArgsWorkaroundClientTest` (ki-ai): the double-encode unwrap is idempotent on
+  correctly single-encoded `arguments` and a no-tool-calls body; unwraps the doubly-encoded
+  shape captured verbatim from the real proxy failure.
+- `BootstrapIntegrationTest` (ki-cli, `KI_IT=1`, real proxy): a real tool-call turn against
+  the real `ki.toml` completes end-to-end — this is the regression test for the koog fix.
+- `./gradlew build` green across ki-ai, ki-agent, ki-cli, ki-tui.
 
 ---
 

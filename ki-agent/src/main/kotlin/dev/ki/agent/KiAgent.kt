@@ -25,6 +25,8 @@ import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.message.Message
 import ai.koog.prompt.streaming.StreamFrame
 import ai.koog.prompt.streaming.toMessageResponse
+import ai.koog.serialization.JSONElement
+import ai.koog.serialization.JSONPrimitive
 import dev.ki.agent.context.ContextUsage
 import dev.ki.agent.context.KiTokenizer
 import dev.ki.agent.context.UsageAccumulator
@@ -38,9 +40,10 @@ enum class ToolPhase { STARTING, OK, ERROR }
 /**
  * A tool-call lifecycle event surfaced to the UI (M9.2). [id] is koog's tool-call id, so
  * the UI can update the same transcript line as the call moves STARTING → OK / ERROR — the
- * pi-style pending → success/error background stripe.
+ * pi-style pending → success/error background stripe. [result] is the tool's own output
+ * (OK) or failure message (ERROR); always null on STARTING.
  */
-data class ToolCallEvent(val id: String, val name: String, val args: String, val phase: ToolPhase)
+data class ToolCallEvent(val id: String, val name: String, val args: String, val phase: ToolPhase, val result: String? = null)
 
 /**
  * The agent runtime, built on koog's [AIAgent]. Holds the system prompt, model,
@@ -221,11 +224,11 @@ class KiAgent(
                 }
                 onToolCallCompleted { ctx ->
                     currentTool = null
-                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.OK))
+                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.OK, resultPreview(ctx.toolResult)))
                 }
                 onToolCallFailed { ctx ->
                     currentTool = null
-                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.ERROR))
+                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.ERROR, ctx.message.takeIf { it.isNotBlank() }))
                 }
             }
         },
@@ -256,6 +259,13 @@ class KiAgent(
      *  collapse whitespace. Truncation to the viewport is the renderer's job. */
     private fun argsPreview(json: String): String =
         json.trim().removeSurrounding("{", "}").replace(Regex("\\s+"), " ").trim()
+
+    /** The tool's own return value as display text — unwraps a string result, else its JSON form. */
+    private fun resultPreview(result: JSONElement?): String? = when (result) {
+        null -> null
+        is JSONPrimitive -> result.contentOrNull
+        else -> result.toString()
+    }?.takeIf { it.isNotBlank() }
 
     private companion object {
         const val SAFETY = 1.25

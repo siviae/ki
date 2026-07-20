@@ -16,7 +16,7 @@ enum class Key {
     LEFT, RIGHT, UP, DOWN, HOME, END, PAGE_UP, PAGE_DOWN,
     WORD_LEFT, WORD_RIGHT,
     CTRL_A, CTRL_B, CTRL_C, CTRL_D, CTRL_E, CTRL_F, CTRL_K, CTRL_L,
-    CTRL_N, CTRL_P, CTRL_Q, CTRL_U, CTRL_W, CTRL_Y,
+    CTRL_N, CTRL_O, CTRL_P, CTRL_Q, CTRL_U, CTRL_W, CTRL_Y,
     PASTE_START, PASTE_END,
     PRINTABLE, UNKNOWN,
 }
@@ -63,6 +63,7 @@ object Keys {
         put(ctrl('a'), Key.CTRL_A); put(ctrl('b'), Key.CTRL_B); put(ctrl('c'), Key.CTRL_C)
         put(ctrl('d'), Key.CTRL_D); put(ctrl('e'), Key.CTRL_E); put(ctrl('f'), Key.CTRL_F)
         put(ctrl('k'), Key.CTRL_K); put(ctrl('l'), Key.CTRL_L); put(ctrl('n'), Key.CTRL_N)
+        put(ctrl('o'), Key.CTRL_O)
         put(ctrl('p'), Key.CTRL_P); put(ctrl('q'), Key.CTRL_Q); put(ctrl('u'), Key.CTRL_U)
         put(ctrl('w'), Key.CTRL_W); put(ctrl('y'), Key.CTRL_Y)
     }
