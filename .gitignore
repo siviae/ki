@@ -5,3 +5,5 @@ build/
 .idea/
 .ki/
 local.properties
+.env
+skills-lock.json

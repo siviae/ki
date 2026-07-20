@@ -66,17 +66,15 @@ object Bootstrap {
     }
 
     private fun resolveConfig(args: CliArgs, manifest: Manifest): KiConfig {
-        // Model: CLI > env > manifest > default; a name matching a catalog alias resolves to its id.
-        val requested = args.model ?: System.getenv("KI_MODEL") ?: manifest.llm.model ?: "gpt-4o"
+        // Model: CLI flag overrides manifest; a name matching a catalog alias resolves to its id.
+        val requested = args.model ?: manifest.llm.model
         val entry = manifest.models[requested]
         val modelId = entry?.id ?: requested
 
-        val apiKey = manifest.llm.apiKeyEnv?.let { System.getenv(it) }
-            ?: System.getenv("LITELLM_API_KEY")
-            ?: System.getenv("OPENAI_API_KEY")
-            ?: "sk-noauth"
+        val apiKey = System.getenv(manifest.llm.apiKeyEnv)
+            ?: error("Environment variable '${manifest.llm.apiKeyEnv}' (set in [llm].api_key_env) is not set")
 
-        val baseUrl = System.getenv("LITELLM_BASE_URL") ?: manifest.llm.baseUrl ?: "http://localhost:4000"
+        val baseUrl = manifest.llm.baseUrl
 
         // Catalog metadata (context window / max output) drives M6's context budget;
         // fall back to KiConfig's defaults when the model isn't catalogued.

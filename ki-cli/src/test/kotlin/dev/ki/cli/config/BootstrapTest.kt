@@ -17,6 +17,10 @@ class BootstrapTest {
     @Test fun `builds only the tools listed in the manifest`() {
         val cfg = writeManifest(
             """
+            [llm]
+            base_url = "http://localhost:4000"
+            api_key_env = "LITELLM_API_KEY"
+            model = "gpt-4o"
             [db]
             path = "ki.db"
             [tools.bash]
@@ -30,13 +34,13 @@ class BootstrapTest {
     }
 
     @Test fun `an unlisted builtin is simply absent`() {
-        val cfg = writeManifest("[tools.bash]\n")
+        val cfg = writeManifest("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[tools.bash]\n")
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
         session.store.use { assertEquals(1, session.tools.size) }
     }
 
     @Test fun `unknown non-builtin tool without a script errors`() {
-        val cfg = writeManifest("[tools.frobnicate]\n")
+        val cfg = writeManifest("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[tools.frobnicate]\n")
         val e = assertFailsWith<ManifestException> { Bootstrap.build(CliArgs(configPath = cfg), "SYS") }
         assertTrue(e.message!!.contains("frobnicate"), e.message)
     }
@@ -45,7 +49,7 @@ class BootstrapTest {
         val dir = Files.createTempDirectory("ki-ctx")
         dir.resolve("KI.md").writeText("Project rule: be terse.")
         val cfg = dir.resolve("ki.toml")
-        cfg.writeText("[context]\nfiles = [\"KI.md\"]\n[tools.bash]\n")
+        cfg.writeText("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[context]\nfiles = [\"KI.md\"]\n[tools.bash]\n")
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
         session.store.use {
             assertTrue(session.systemPrompt.startsWith("SYS"))
@@ -57,6 +61,8 @@ class BootstrapTest {
         val cfg = writeManifest(
             """
             [llm]
+            base_url = "http://localhost:4000"
+            api_key_env = "LITELLM_API_KEY"
             model = "small"
             [db]
             path = "ki.db"
@@ -74,7 +80,7 @@ class BootstrapTest {
     }
 
     @Test fun `--continue resumes the most recent session`() {
-        val cfg = writeManifest("[db]\npath = \"ki.db\"\n[tools.bash]\n")
+        val cfg = writeManifest("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[db]\npath = \"ki.db\"\n[tools.bash]\n")
         // Seed two sessions directly in the store the bootstrap will open.
         val first = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
         first.store.use { s ->

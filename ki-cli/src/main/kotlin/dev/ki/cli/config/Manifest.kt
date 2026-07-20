@@ -19,7 +19,7 @@ import kotlin.io.path.readText
  * blob which uses koog's kotlinx serializer.
  */
 data class Manifest(
-    val llm: LlmSection = LlmSection(),
+    val llm: LlmSection,
     val db: DbSection = DbSection(),
     val context: ContextSection = ContextSection(),
     /** Tool name → entry. Builtins (see `BuiltinTools.NAMES`) need no `script`. */
@@ -47,10 +47,10 @@ data class Manifest(
 }
 
 data class LlmSection(
-    val baseUrl: String? = null,
+    val baseUrl: String,
     /** Name of the env var holding the API key (secret by reference, never inline). */
-    val apiKeyEnv: String? = null,
-    val model: String? = null,
+    val apiKeyEnv: String,
+    val model: String,
 )
 
 /**

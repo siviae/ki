@@ -17,6 +17,8 @@ class KiControllerTest {
             it.writeText(
                 """
                 [llm]
+                base_url = "http://localhost:4000"
+                api_key_env = "LITELLM_API_KEY"
                 model = "a"
                 [db]
                 path = "ki.db"

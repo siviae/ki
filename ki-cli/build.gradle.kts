@@ -37,4 +37,7 @@ application {
 
 tasks.test {
     useJUnitPlatform()
+    // Fixture manifests reference this env var name for [llm].api_key_env; Bootstrap
+    // now requires it to be set (no more silent "sk-noauth" fallback).
+    environment("LITELLM_API_KEY", "sk-test")
 }

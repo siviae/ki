@@ -1,7 +1,6 @@
 package dev.ki.ai
 
 import ai.koog.prompt.executor.clients.openai.OpenAIClientSettings
-import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
 import ai.koog.prompt.executor.llms.MultiLLMPromptExecutor
 import ai.koog.prompt.executor.model.PromptExecutor
 
@@ -23,7 +22,7 @@ class KiLlm private constructor(
     constructor(config: KiConfig) : this(
         executor = RetryingPromptExecutor(
             MultiLLMPromptExecutor(
-                OpenAILLMClient(
+                DoubleEncodedArgsWorkaroundClient(
                     apiKey = config.apiKey,
                     settings = OpenAIClientSettings(baseUrl = config.baseUrl),
                 )
@@ -37,8 +36,6 @@ class KiLlm private constructor(
     )
 
     companion object {
-        fun fromEnv(): KiLlm = KiLlm(KiConfig.fromEnv())
-
         /** Build from an explicit executor + model (embedding / tests). */
         fun of(executor: PromptExecutor, model: KiModel): KiLlm = KiLlm(executor, model)
     }

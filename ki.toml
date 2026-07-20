@@ -5,11 +5,12 @@
 
 [llm]
 # model / base_url may also come from the environment. Precedence:
-# CLI flag > env (KI_MODEL, LITELLM_BASE_URL) > this file > default.
-model = "gpt-4o"
+# CLI flag > env (KI_MODEL, LITELLM_BASE_URL) > this file.
+base_url = "https://llm-core-olap.samokat.ru/"
+model = "deepseek-v4-flash"
 # api_key_env names the env var holding the key — a secret by reference, never
-# inlined into this (committable) file. Falls back to LITELLM_API_KEY / OPENAI_API_KEY.
-api_key_env = "LITELLM_API_KEY"
+# inlined into this (committable) file.
+api_key_env = "DS_FLASH_KEY"
 
 [db]
 # Local, lightweight deployment: an embedded SQLite file. No server, no Spring.
