@@ -1,6 +1,7 @@
 package dev.ki.cli
 
 import dev.ki.agent.KiAgent
+import dev.ki.agent.ToolCallEvent
 import dev.ki.agent.context.ContextUsage
 import dev.ki.ai.KiLlm
 import dev.ki.cli.config.KiSession
@@ -31,10 +32,16 @@ class KiController(private val session: KiSession) : SlashContext {
         historyProvider = session.historyProvider,
         usageMeter = session.usageMeter,
         checkpointProvider = session.checkpointProvider,
+        streaming = true,
     )
 
-    /** Run a turn under the active (possibly resumed) session id. */
-    suspend fun run(input: String): String = agent.run(input, activeSessionId)
+    /**
+     * Run a turn under the active (possibly resumed) session id. [onReasoning] receives the
+     * model's streamed reasoning/thinking deltas (M9.1); [onTool] receives tool-call
+     * lifecycle events for the transcript's colored tool line (M9.2).
+     */
+    suspend fun run(input: String, onReasoning: (String) -> Unit, onTool: (ToolCallEvent) -> Unit): String =
+        agent.run(input, activeSessionId, onReasoning, onTool)
 
     /**
      * Live resume. With no [id], list resumable sessions; with an [id], switch the active

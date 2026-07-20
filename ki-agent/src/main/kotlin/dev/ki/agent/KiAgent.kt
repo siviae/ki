@@ -4,7 +4,15 @@ import ai.koog.agents.chatMemory.feature.ChatHistoryProvider
 import ai.koog.agents.chatMemory.feature.ChatMemory
 import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.agent.config.AIAgentConfig
+import ai.koog.agents.core.agent.entity.AIAgentGraphStrategy
+import ai.koog.agents.core.dsl.builder.node
+import ai.koog.agents.core.dsl.builder.strategy
 import ai.koog.agents.core.dsl.extension.HistoryCompressionStrategy
+import ai.koog.agents.core.dsl.extension.ReceivedToolResults
+import ai.koog.agents.core.dsl.extension.nodeExecuteTools
+import ai.koog.agents.core.dsl.extension.nodeLLMCompressHistory
+import ai.koog.agents.core.dsl.extension.onTextMessage
+import ai.koog.agents.core.dsl.extension.onToolCalls
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.ext.agent.HistoryCompressionConfig
@@ -15,10 +23,24 @@ import ai.koog.agents.snapshot.providers.PersistenceStorageProvider
 import ai.koog.prompt.Prompt
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.message.Message
+import ai.koog.prompt.streaming.StreamFrame
+import ai.koog.prompt.streaming.toMessageResponse
 import dev.ki.agent.context.ContextUsage
 import dev.ki.agent.context.KiTokenizer
 import dev.ki.agent.context.UsageAccumulator
 import dev.ki.ai.KiLlm
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.toList
+
+/** Lifecycle phase of a tool call, for the transcript's tool-call line (M9.2). */
+enum class ToolPhase { STARTING, OK, ERROR }
+
+/**
+ * A tool-call lifecycle event surfaced to the UI (M9.2). [id] is koog's tool-call id, so
+ * the UI can update the same transcript line as the call moves STARTING → OK / ERROR — the
+ * pi-style pending → success/error background stripe.
+ */
+data class ToolCallEvent(val id: String, val name: String, val args: String, val phase: ToolPhase)
 
 /**
  * The agent runtime, built on koog's [AIAgent]. Holds the system prompt, model,
@@ -44,6 +66,15 @@ import dev.ki.ai.KiLlm
  * no-op restore, so the happy path is unaffected and chat-memory handles history as usual.
  * Default off (null provider); the raw pre-compaction transcript lives in the checkpoint
  * blob even after M6 compaction overwrites the [historyProvider] rows.
+ *
+ * **M9.1 — streaming reasoning.** When [streaming] is on, the agent drives the tool loop
+ * with a streaming LLM node instead of a blocking one: each turn's [StreamFrame]s are
+ * collected, the model's reasoning/thinking deltas ([StreamFrame.ReasoningDelta]) are
+ * pushed to the per-run [reasoningSink] as they arrive, and the frames are folded back
+ * into the same `Message.Assistant` the blocking node would have produced — so the tool
+ * loop, M6 compression, and checkpointing are unchanged. Usage is recorded from the
+ * folded response inside the node (the streaming path does not fire `onLLMCallCompleted`).
+ * Default off, so `ki-cluster` and tests keep the proven blocking path.
  */
 class KiAgent(
     private val llm: KiLlm,
@@ -56,7 +87,15 @@ class KiAgent(
     contextBudgetRatio: Double = 0.7,
     private val usageMeter: UsageAccumulator? = null,
     private val checkpointProvider: PersistenceStorageProvider<*>? = null,
+    private val streaming: Boolean = false,
 ) {
+    /** Per-run sink for the model's streamed reasoning deltas; set for the duration of [run]. */
+    @Volatile
+    private var reasoningSink: ((String) -> Unit)? = null
+
+    /** Per-run sink for tool-call lifecycle events (M9.2); set for the duration of [run]. */
+    @Volatile
+    private var toolSink: ((ToolCallEvent) -> Unit)? = null
     private val tokenizer = KiTokenizer()
     private val window: Long = llm.defaultModel.contextWindow
     private val budgetTokens: Long = maxOf(MIN_BUDGET, (window * contextBudgetRatio).toLong())
@@ -97,17 +136,72 @@ class KiAgent(
         usageMeter?.record(meta?.inputTokensCount, meta?.outputTokensCount)
     }
 
+    private val compressionConfig = HistoryCompressionConfig(
+        isHistoryTooBig = ::tooBig,
+        compressionStrategy = if (compressHistory)
+            HistoryCompressionStrategy.FromLastNMessages(keepLastMessages)
+        else HistoryCompressionStrategy.NoCompression,
+    )
+
+    /**
+     * Collect one streaming LLM response: push reasoning deltas to [reasoningSink] as they
+     * arrive, fold the frames into the `Message.Assistant` the blocking node would return,
+     * append it to the session, and record usage (the streaming path skips `onLLMCallCompleted`).
+     */
+    private suspend fun ai.koog.agents.core.agent.session.AIAgentLLMWriteSession.streamFold(): Message.Assistant {
+        val frames = requestLLMStreaming()
+            .onEach { frame -> if (frame is StreamFrame.ReasoningDelta) reasoningSink?.invoke(frame.text.orEmpty()) }
+            .toList()
+        val response = frames.toMessageResponse()
+        appendPrompt { message(response) }
+        updateUsage(prompt, response)
+        return response
+    }
+
+    /**
+     * A single-run strategy that mirrors koog's [singleRunStrategyWithHistoryCompression]
+     * but streams the two primary LLM calls (initial + post-tool) through [streamFold], so
+     * reasoning deltas reach the UI live. The compression branch stays on the blocking path.
+     */
+    private fun streamingStrategy(): AIAgentGraphStrategy<String, String> =
+        strategy<String, String>("single_run_streaming_with_history_compression") {
+            val nodeCallLLM by node<String, Message.Assistant>("streamCallLLM") { input ->
+                llm.writeSession { appendPrompt { user(input) }; streamFold() }
+            }
+            val nodeExecuteTool by nodeExecuteTools(parallel = false)
+            val nodeSendToolResult by node<ReceivedToolResults, Message.Assistant>("streamSendToolResult") { results ->
+                llm.writeSession {
+                    appendPrompt { user { results.toolResults.forEach { r -> toolResult(r.toMessagePart()) } } }
+                    streamFold()
+                }
+            }
+            val nodeCompressHistory by nodeLLMCompressHistory<ReceivedToolResults>(
+                strategy = compressionConfig.compressionStrategy,
+                retrievalModel = compressionConfig.retrievalModel,
+            )
+            val nodeSendCompressedHistory by node<ReceivedToolResults, Message.Assistant> {
+                llm.writeSession { requestLLM() }
+            }
+
+            edge(nodeStart forwardTo nodeCallLLM)
+            edge(nodeCallLLM forwardTo nodeExecuteTool onToolCalls { true })
+            edge(nodeCallLLM forwardTo nodeFinish onTextMessage { true })
+
+            edge(nodeExecuteTool forwardTo nodeCompressHistory onCondition { llm.readSession { compressionConfig.isHistoryTooBig(prompt) } })
+            edge(nodeExecuteTool forwardTo nodeSendToolResult onCondition { llm.readSession { !compressionConfig.isHistoryTooBig(prompt) } })
+            edge(nodeCompressHistory forwardTo nodeSendCompressedHistory)
+
+            edge(nodeSendToolResult forwardTo nodeFinish onTextMessage { true })
+            edge(nodeSendToolResult forwardTo nodeExecuteTool onToolCalls { true })
+            edge(nodeSendCompressedHistory forwardTo nodeFinish onTextMessage { true })
+            edge(nodeSendCompressedHistory forwardTo nodeExecuteTool onToolCalls { true })
+        }
+
     private val agent: AIAgent<String, String> = AIAgent(
         promptExecutor = llm.executor,
         agentConfig = config,
-        strategy = singleRunStrategyWithHistoryCompression(
-            HistoryCompressionConfig(
-                isHistoryTooBig = ::tooBig,
-                compressionStrategy = if (compressHistory)
-                    HistoryCompressionStrategy.FromLastNMessages(keepLastMessages)
-                else HistoryCompressionStrategy.NoCompression,
-            )
-        ),
+        strategy = if (streaming) streamingStrategy()
+        else singleRunStrategyWithHistoryCompression(compressionConfig),
         toolRegistry = registry,
         installFeatures = {
             historyProvider?.let { provider ->
@@ -121,9 +215,18 @@ class KiAgent(
             }
             install(EventHandler) {
                 onLLMCallCompleted { ctx -> updateUsage(ctx.prompt, ctx.response) }
-                onToolCallStarting { ctx -> currentTool = ctx.toolName }
-                onToolCallCompleted { currentTool = null }
-                onToolCallFailed { currentTool = null }
+                onToolCallStarting { ctx ->
+                    currentTool = ctx.toolName
+                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.STARTING))
+                }
+                onToolCallCompleted { ctx ->
+                    currentTool = null
+                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.OK))
+                }
+                onToolCallFailed { ctx ->
+                    currentTool = null
+                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.ERROR))
+                }
             }
         },
     )
@@ -133,8 +236,26 @@ class KiAgent(
      * [sessionId] keys chat-memory persistence — pass the same id to resume a session
      * (koog derives the run id from it); `null` starts a fresh, unpersisted-key run.
      */
-    suspend fun run(input: String, sessionId: String? = null): String =
-        agent.run(input, sessionId)
+    suspend fun run(
+        input: String,
+        sessionId: String? = null,
+        onReasoning: ((String) -> Unit)? = null,
+        onTool: ((ToolCallEvent) -> Unit)? = null,
+    ): String {
+        reasoningSink = onReasoning
+        toolSink = onTool
+        return try {
+            agent.run(input, sessionId)
+        } finally {
+            reasoningSink = null
+            toolSink = null
+        }
+    }
+
+    /** Compact a tool's JSON args for a one-line preview: drop the outer braces and
+     *  collapse whitespace. Truncation to the viewport is the renderer's job. */
+    private fun argsPreview(json: String): String =
+        json.trim().removeSurrounding("{", "}").replace(Regex("\\s+"), " ").trim()
 
     private companion object {
         const val SAFETY = 1.25

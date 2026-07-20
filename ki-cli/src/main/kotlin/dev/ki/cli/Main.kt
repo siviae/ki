@@ -38,7 +38,14 @@ fun main(argv: Array<String>) {
     session.store.use {
         // One-shot mode: run a single prompt, print the reply, exit.
         session.oneShotPrompt?.let { prompt ->
-            println(runBlocking { controller.run(prompt) })
+            // Stream reasoning + tool calls to stderr so stdout stays the clean answer (M9.1/M9.2).
+            println(runBlocking {
+                controller.run(
+                    prompt,
+                    onReasoning = { delta -> System.err.print(delta) },
+                    onTool = { e -> if (e.phase == dev.ki.agent.ToolPhase.STARTING) System.err.println("⏺ ${e.name}(${e.args})") },
+                )
+            })
             return
         }
 

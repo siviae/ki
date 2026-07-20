@@ -44,6 +44,8 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M7 | TUI: slash commands, cancel, cost | ✅ Done (streaming deferred) |
 | M8 | Robustness: retry, tool-errors, process-kill, logging | ✅ Done (checkpoints split to M9) |
 | M9 | Persistence: checkpoints, crash recovery & resume | ✅ Done |
+| M9.1 | Streaming model reasoning (thinking) blocks to the terminal | ✅ Done |
+| M9.2 | Colored tool-call lines in the transcript (pi-style) | ✅ Done |
 | M10 | Distributed multi-node ki (Spring/Postgres) | ◐ Primitives + orchestration loop done (Postgres-verified); LISTEN/NOTIFY + real-agent e2e left |
 | M11 | RocketChat bot reference implementation | ◐ Designed (verified surface); build pending M10 loop |
 | M12 | Packaging & distribution | ▢ Planned (was M9) |
@@ -843,6 +845,95 @@ idempotency; do not imply clean exactly-once resume.
 
 ---
 
+## M9.1 — Streaming model reasoning (thinking) blocks to the terminal  ✅ DONE
+
+**Goal:** surface the model's reasoning/thinking as it is produced, streamed
+token-by-token to the terminal, visually distinct from the final answer. Carved out of
+M13's "Live token streaming" as a standalone increment because reasoning frames are a
+separate `StreamFrame` variant from answer text and land end-to-end (agent → CLI render)
+on their own. *(Slotted as M9.1 — the literal "M9" is the done Persistence milestone;
+this rides directly on M9's single-node agent path.)* Streaming the *answer* body and
+scrollback stay in M13.
+
+### Delivered (as built — authoritative)
+- **koog surface (verified against `prompt-model` / `agents-core` 1.0.0-preview7).**
+  `StreamFrame.ReasoningDelta.text` carries the streamed thinking chunk;
+  `StreamFrame.ReasoningComplete` / `TextComplete` / `ToolCallComplete` + `End` are folded
+  back into a `Message.Assistant` by `Iterable<StreamFrame>.toMessageResponse()`.
+- **Streaming strategy in `KiAgent` (`streaming` flag, default off).** Mirrors koog's
+  `singleRunStrategyWithHistoryCompression` but swaps the two primary LLM calls (initial +
+  post-tool) for a `streamFold()` node: it collects `requestLLMStreaming()`, pushes each
+  `ReasoningDelta` to a per-run `reasoningSink`, folds the frames into the same
+  `Message.Assistant` the blocking node would return, appends it, and records usage
+  in-node (the streaming path does not fire `onLLMCallCompleted`). The compression branch
+  stays on the blocking path — so the **tool loop and M6 compression are unchanged**.
+- **Per-run reasoning sink.** `KiAgent.run(input, sessionId, onReasoning)` sets a volatile
+  sink for the turn; `ki-cluster` and the blocking tests keep the proven non-streaming
+  path (default `streaming = false`).
+- **CLI render.** `AgentBridge` threads an `onReasoning` callback, marshaled to the UI
+  thread via `uiPost`; `KiScreen` fills a dimmed, word-wrapped `ThinkingBlock` (`💭`
+  marker) above the answer, updated token-by-token. One-shot mode streams reasoning to
+  **stderr** so stdout stays the clean answer.
+
+### Verification
+- `StreamingReasoningTest` (real `KiAgent`, scripted `StreamFrame` executor): the fold
+  drives the tool loop and delivers reasoning deltas **in order**; a second test proves M6
+  compression still fires and chat-memory + system prompt survive under the streaming
+  strategy. `AgentBridgeTest` covers reasoning-delta marshaling. `./gradlew build` green.
+
+### Deferred (unchanged from plan)
+- **Live *answer* streaming + scrollback** stay in **M13** (only reasoning streams today;
+  the final answer still lands as one block on completion).
+- **Cancel mid-reasoning-stream** (M7 Ctrl-C) and a **show/hide/collapse toggle** for the
+  thinking region are not yet wired — folded into M13's streaming polish.
+- **Provider caveat:** models that return reasoning only in the final message (not as
+  deltas) render an empty thinking block — no error, just nothing to stream.
+
+---
+
+## M9.2 — Colored tool-call lines in the transcript (pi-style)  ✅ DONE
+
+**Goal:** show each tool call as its own transcript row, colored like pi — so the user
+can see what the agent is doing, not just a flickering status-bar tool name.
+
+**Decision: match pi's model, not a hardcoded green.** Inspected upstream
+(`packages/coding-agent/src/modes/interactive/components/tool-execution.ts` +
+`theme/theme.ts` / `dark.json`). pi does **not** color the tool title green — the title is
+`bold(toolName)` in the normal foreground; the visible color is a **full-width background
+stripe** whose color tracks the call's lifecycle: `toolPendingBg` `#282832` while running →
+`toolSuccessBg` `#283228` (the dark green seen in a dark terminal) on success →
+`toolErrorBg` `#3c2828` on error. pi emits truecolor `48;2;r;g;b` (nearest-256 fallback when
+the terminal lacks truecolor).
+
+### Delivered (as built — authoritative)
+- **Tool-call events from `KiAgent`.** koog's `EventHandler` `onToolCallStarting` /
+  `onToolCallCompleted` / `onToolCallFailed` (each carries `toolCallId` + `toolArgs`) feed a
+  per-run `toolSink` as a `ToolCallEvent(id, name, args, phase)` with phase
+  `STARTING` / `OK` / `ERROR`. Fires on **both** the blocking and streaming (M9.1) paths.
+- **`run(..., onTool)`** sets the sink for the turn; `AgentBridge` threads it and marshals
+  each event onto the UI thread via `uiPost` (same pattern as the M9.1 reasoning sink).
+- **`ToolCallLine` component (ki-cli).** A full-width row: `⏺ name(args)`, bold title
+  (SGR-22 so it nests inside the stripe), on a truecolor background stripe. `KiScreen` keys
+  live lines by `toolCallId` so completion **recolors the same row** pending → success/error.
+- **`Ansi.bgRgb` / `Ansi.boldIn` (ki-tui)** — truecolor background (reset `49m`) and
+  bold-without-full-reset primitives. Compact args via `KiAgent.argsPreview` (strips the
+  outer JSON braces); the row pads/truncates to the viewport so the stripe fills the width.
+- **One-shot mode** logs `⏺ name(args)` to stderr on tool start (stdout stays the answer).
+
+### Verification
+- `ToolCallLineTest` — full-width stripe (width contract, incl. narrow widths), the pi bg
+  hexes per phase (`48;2;40;40;50` / `40;50;40` / `60;40;40`), bold title, no-arg omits
+  parens. `StreamingReasoningTest` now also asserts the ls call surfaces `STARTING → OK`
+  with a shared id. `./gradlew build` green (ki-tui 71, ki-agent 54, ki-cli 52).
+
+### Deferred
+- **256-color fallback + terminal-capability / theme (dark/light) detection** — pi picks
+  truecolor vs nearest-256 from capabilities and auto-detects background via OSC 11; ki has
+  neither yet, so M9.2 emits **truecolor only**. Folded into M15 (rich rendering / theme).
+- Richer per-tool renderers (diffs, output folding, `⏺`/spinner states) stay in M13/M15.
+
+---
+
 ## M10 — Distributed multi-node ki (Spring/Postgres)
 
 **Goal:** run ki as a **distributed, multi-node service** where each node runs its own
@@ -1227,7 +1318,6 @@ export LITELLM_API_KEY=sk-...                    # if your proxy requires one
 ./gradlew :ki-cli:installDist && ki-cli/build/install/ki-cli/bin/ki-cli
 ```
 
-**M1–M4, M6, M7, M8 are done** (M5 deferred). Next up is **M9** (persistence:
-checkpoints, crash recovery & resume), the foundation for **M10** (distributed
-multi-node) and **M11** (RocketChat bot). Each milestone is independently shippable; keep the
-integration-test-behind-`KI_IT` discipline so `gradle build` stays green offline.
+**M1–M4, M6–M9, M9.1, M9.2 are done** (M5 deferred); **M10/M11** are in progress. Each
+milestone is independently shippable; keep the integration-test-behind-`KI_IT` discipline
+so `gradle build` stays green offline.

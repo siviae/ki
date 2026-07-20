@@ -1,5 +1,6 @@
 package dev.ki.cli.ui
 
+import dev.ki.agent.ToolCallEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -22,15 +23,29 @@ import kotlinx.coroutines.launch
 class AgentBridge(
     private val scope: CoroutineScope,
     private val uiPost: (Runnable) -> Unit,
-    private val run: suspend (String) -> String,
+    private val run: suspend (String, (String) -> Unit, (ToolCallEvent) -> Unit) -> String,
 ) {
     @Volatile
     private var current: Job? = null
 
-    fun submit(prompt: String, onResult: (String) -> Unit) {
+    /**
+     * Start a turn. [onReasoning] receives streamed reasoning deltas and [onTool] receives
+     * tool-call lifecycle events; all callbacks are marshaled onto the UI thread. On cancel
+     * none fire again (the coroutine is dead).
+     */
+    fun submit(
+        prompt: String,
+        onReasoning: (String) -> Unit,
+        onTool: (ToolCallEvent) -> Unit,
+        onResult: (String) -> Unit,
+    ) {
         current = scope.launch {
             val result = try {
-                run(prompt)
+                run(
+                    prompt,
+                    { delta -> uiPost(Runnable { onReasoning(delta) }) },
+                    { event -> uiPost(Runnable { onTool(event) }) },
+                )
             } catch (e: CancellationException) {
                 throw e // cancellation is not an error — never surface it as a result
             } catch (e: Throwable) {

@@ -37,6 +37,15 @@ object Ansi {
     fun dim(s: String): String = CSI + "2m" + s + RESET
     fun invert(s: String): String = CSI + "7m" + s + RESET
 
+    /** Bold [s] using SGR 22 (bold-off) rather than a full reset, so it nests inside a
+     *  background stripe without clearing the background. */
+    fun boldIn(s: String): String = CSI + "1m" + s + CSI + "22m"
+
+    /** Wrap [s] in a 24-bit (truecolor) background, resetting only the background (`49m`)
+     *  so surrounding styles survive. Mirrors pi's `bgAnsi` truecolor path; the 256-color
+     *  fallback for non-truecolor terminals is deferred (ki has no capability detection yet). */
+    fun bgRgb(r: Int, g: Int, b: Int, s: String): String = CSI + "48;2;$r;$g;${b}m" + s + CSI + "49m"
+
     /** Set terminal window title (OSC 2). */
     fun title(t: String): String = "$ESC]2;$t"
 }

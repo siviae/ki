@@ -25,9 +25,9 @@ class AgentBridgeTest {
 
         // uiPost stands in for TApplication::invokeLater.
         val uiPost: (Runnable) -> Unit = { r -> posted.set(true); r.run() }
-        val bridge = AgentBridge(scope, uiPost, run = { "echo: $it" })
+        val bridge = AgentBridge(scope, uiPost, run = { p, _, _ -> "echo: $p" })
 
-        bridge.submit("hello") { r -> result.set(r); latch.countDown() }
+        bridge.submit("hello", onReasoning = {}, onTool = {}) { r -> result.set(r); latch.countDown() }
 
         assertTrue(latch.await(5, TimeUnit.SECONDS), "callback never fired")
         assertTrue(posted.get(), "result was not marshaled through uiPost")
@@ -35,13 +35,35 @@ class AgentBridgeTest {
     }
 
     @Test
+    fun `reasoning deltas are marshaled through uiPost`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val posts = AtomicReference(0)
+        val latch = CountDownLatch(1)
+        val seen = AtomicReference("")
+
+        val uiPost: (Runnable) -> Unit = { r -> posts.updateAndGet { it + 1 }; r.run() }
+        // The runner drives the reasoning sink, then returns the answer.
+        val bridge = AgentBridge(scope, uiPost, run = { _, onReasoning, _ ->
+            onReasoning("think ")
+            onReasoning("more")
+            "answer"
+        })
+
+        bridge.submit("x", onReasoning = { d -> seen.updateAndGet { it + d } }, onTool = {}) { latch.countDown() }
+
+        assertTrue(latch.await(5, TimeUnit.SECONDS), "callback never fired")
+        assertEquals("think more", seen.get())
+        assertTrue(posts.get() >= 3, "each reasoning delta + result should post to the UI thread")
+    }
+
+    @Test
     fun `runner exceptions surface as an error line, not a crash`() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val latch = CountDownLatch(1)
         val result = AtomicReference<String>()
-        val bridge = AgentBridge(scope, { it.run() }, run = { error("boom") })
+        val bridge = AgentBridge(scope, { it.run() }, run = { _, _, _ -> error("boom") })
 
-        bridge.submit("x") { r -> result.set(r); latch.countDown() }
+        bridge.submit("x", onReasoning = {}, onTool = {}) { r -> result.set(r); latch.countDown() }
 
         assertTrue(latch.await(5, TimeUnit.SECONDS))
         assertTrue(result.get().contains("boom"), "expected error text, got: ${result.get()}")
@@ -54,12 +76,12 @@ class AgentBridgeTest {
         val cancelled = CountDownLatch(1)
         val resultFired = AtomicBoolean(false)
 
-        val bridge = AgentBridge(scope, { it.run() }, run = {
+        val bridge = AgentBridge(scope, { it.run() }, run = { _, _, _ ->
             started.countDown()
             delay(10_000) // never completes within the test
             "done"
         })
-        bridge.submit("x") { resultFired.set(true) }
+        bridge.submit("x", onReasoning = {}, onTool = {}) { resultFired.set(true) }
 
         assertTrue(started.await(5, TimeUnit.SECONDS), "turn never started")
         bridge.cancel { cancelled.countDown() }
@@ -74,7 +96,7 @@ class AgentBridgeTest {
     fun `cancel with nothing running is a no-op`() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val fired = AtomicBoolean(false)
-        AgentBridge(scope, { it.run() }, run = { "x" }).cancel { fired.set(true) }
+        AgentBridge(scope, { it.run() }, run = { _, _, _ -> "x" }).cancel { fired.set(true) }
         assertFalse(fired.get())
     }
 }
