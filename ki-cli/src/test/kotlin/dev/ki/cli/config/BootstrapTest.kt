@@ -79,6 +79,25 @@ class BootstrapTest {
         }
     }
 
+    @Test fun `sibling ki-star-toml files are auto-discovered and merged`() {
+        val dir = Files.createTempDirectory("ki-boot")
+        val cfg = dir.resolve("ki.toml")
+        cfg.writeText("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[tools.bash]\n")
+        // A sibling adds another tool; no --config for it, discovery must pick it up.
+        dir.resolve("ki.extra.toml").writeText("[tools.read]\n")
+        val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
+        session.store.use { assertEquals(2, session.tools.size) }
+    }
+
+    @Test fun `a duplicate key across primary and sibling fails the build`() {
+        val dir = Files.createTempDirectory("ki-boot")
+        val cfg = dir.resolve("ki.toml")
+        cfg.writeText("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[tools.bash]\n")
+        dir.resolve("ki.dup.toml").writeText("[llm]\nmodel = \"other\"\n")
+        val e = assertFailsWith<ManifestException> { Bootstrap.build(CliArgs(configPath = cfg), "SYS") }
+        assertTrue(e.message!!.contains("llm.model"), e.message)
+    }
+
     @Test fun `--continue resumes the most recent session`() {
         val cfg = writeManifest("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[db]\npath = \"ki.db\"\n[tools.bash]\n")
         // Seed two sessions directly in the store the bootstrap will open.

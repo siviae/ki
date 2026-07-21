@@ -54,6 +54,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M14 | Tool suite completion | ▢ Planned (was M11) |
 | M15 | Rich rendering & multi-provider | ▢ Planned (was M12) |
 | M16 | Integration & snapshot testing | ▢ Planned (was M13) |
+| M17 | Multi-file manifest config (no-override merge) | ▶ **In progress — pulled ahead as next work** |
 
 M8+ are the **most-reasonable reorganization of every deferred/backlog item** carried
 out of M1–M7 (each milestone below cites the milestone it inherits work from). M5
@@ -538,6 +539,15 @@ Claude Code permission modes.
 - ki-cli approval prompt in the TUI (approve once / always-for-this-tool / deny),
   wired through `AgentBridge` without blocking the UI thread.
 - Allowlist persisted per session/project (e.g. "always allow `bash: git status`").
+- **Bash command allowlist** *(pi parity backlog #2)* — `[tools.bash.commands]` restricts
+  `bash` to specific commands/subcommands (e.g. `git: [add, status, log, diff]`), or
+  `unrestricted = true` to skip the allowlist. Unknown command → descriptive error
+  listing what's allowed. Mirrors pi hats' `bash.commands` / `bash.unrestricted`.
+- **File access restrictions** *(pi parity backlog #3)* — `[context].access.read` /
+  `.edit` glob lists (ant-style, `**` recursive) checked by `read`/`write`/`edit`
+  before the operation; denial names the allowed patterns. Mirrors pi hats' `files.read`
+  / `files.edit`. Unit tests: allow/deny by pattern, root-escape attempts, symlink
+  traversal.
 
 **Acceptance**
 - With default mode, a `write_file`/`bash` call blocks for approval; deny → the
@@ -1289,6 +1299,13 @@ ki-tui (viewport, input).
 - **`shellPath` / WSL stdin transport** for `bash` *(M3 deferral)*.
 - **More bundled script tools** *(backlog)* — web fetch, apply-patch, run-tests.
 - **Tool-call parallelism where safe** *(backlog)*.
+- **Skills system** *(pi parity backlog #1)* — pi hats reference `skills: [name, ...]`;
+  each skill is a directory (`.pi/all-skills/<name>/SKILL.md` + optional tool
+  implementations) injected into the system prompt as `<available_skills>` and
+  filtered per-hat. Ki equivalent: a `skills` field on the manifest, `Bootstrap`
+  resolving skill paths and loading `SKILL.md` content into context, with per-session
+  filtering. (Ki's single-manifest design means no per-hat filtering hook is needed —
+  see pi backlog #9.)
 
 **Acceptance**
 - `find` + fuzzy `edit` match pi's behavior on the ported test cases.
@@ -1341,6 +1358,64 @@ ki-tui (viewport, input).
 
 ---
 
+## M17 — Multi-file manifest config (no-override merge)
+
+> **Sequencing:** pulled ahead as the immediate next work item (ahead of M10–M16 in
+> execution order). Keeps the number M17 rather than renumbering into an M10 slot —
+> M10/M11 are anchored in shipped commit messages (`M10 orchestration loop`, `M9.x`),
+> so renumbering them would leave PLAN.md permanently disagreeing with `git log`.
+
+**Goal:** let a project split one agent's config across multiple TOML files instead of
+one growing `ki.toml`, without inventing override/precedence rules — the multi-provider
+catalog need (pi's `kbconfig.yaml.llmProviders`: 4 providers, 11 models vs. ki's
+single `baseUrl`/`apiKeyEnv`/`model`) becomes just the first user of this, not a
+bespoke file format.
+
+**Modules:** ki-cli (config loading).
+
+**Deliverables**
+- Config loader accepts N TOML files per agent instead of one `ki.toml` — default
+  discovery loads `ki.toml` plus any sibling `ki.*.toml` files in the project root;
+  an explicit file list (CLI flag) overrides discovery. Each file parsed with the
+  existing Jackson TOML mapper.
+- Files merge into one logical `Manifest` tree by **deep union, not override**: files
+  are parsed to TOML trees and merged recursively. Disjoint keys union at every depth,
+  so a shared *section* may be assembled from several files (e.g. `[tools.a]` in one
+  file, `[tools.b]` in another; or `[llm].base_url` here and `[llm].model` there) —
+  that is the point, and it carries no ambiguity.
+- **No-duplication validation**: a merge conflict is only ever the **same concrete
+  scalar/array key path set in two files** (e.g. both define `[llm].model`, or both
+  define `context.files`). On conflict the loader throws, naming the dotted key path
+  and *both* file paths. There is no last-file-wins or load-order-dependent behavior;
+  a collision is always a config error the user fixes, never resolved silently. (Arrays
+  don't deep-merge — an array-valued key defined in two files is a conflict, not a
+  concatenation, keeping order deterministic.)
+- Model/provider catalog is just an example split under this mechanism: e.g.
+  `ki.providers.toml` carrying `[[providers]]` / `[[providers.models]]` (`id`,
+  `modelId`, `displayName`, `reasoning`, `contextWindow`, `maxTokens`, `apiKeyEnv`),
+  merged like any other file — no separate file format, precedence chain, or
+  `defaultModel` fallback needed.
+- `/model` slash command lists providers/models found across all loaded files.
+- Unit tests: two disjoint files merge into one manifest; a shared section assembled
+  from two files (disjoint keys) merges; the same scalar key in two files errors and
+  names the dotted path + both files; an array key in two files errors; a
+  single-`ki.toml` project behaves exactly as today.
+
+**Acceptance**
+- A project with just `ki.toml` boots unchanged — no other files required.
+- A project split into `ki.toml` + `ki.providers.toml` (disjoint sections) merges
+  cleanly into one `Manifest`.
+- Two files setting the same key path fail fast with a "duplicate key `X` defined in
+  `fileA` and `fileB`" error, not a silent override.
+
+**Notes:** distinct from the per-manifest `[models]` alias catalog already in `ki.toml`
+(M4) — that's a single-file alias table, this is the general multi-file split
+mechanism. Supersedes an earlier single-purpose `ki-providers.toml`-with-precedence
+design — union-merge + hard duplicate-key errors removes the override-ordering
+ambiguity entirely.
+
+---
+
 ## Residual / opportunistic (not milestoned)
 
 Low-priority items that don't warrant their own milestone; fold into a nearby one if
@@ -1350,6 +1425,29 @@ convenient:
   M6's compression strategy already meets the window-budget goal.
 - **HikariCP-pooled local backend** (M4) — unneeded for a single-user CLI; add only if a
   local multi-connection use case appears.
+- **Extension system** *(pi parity backlog #4)* — pi auto-discovers `.pi/extensions/*.ts`
+  as a runtime plugin mechanism (tools, commands, event handlers, providers), selectable
+  per-hat. Ki has no equivalent yet — builtins + `ScriptToolLoader`-compiled `.ki.kts`
+  script tools only, no runtime SPI. Priority: low, post-M14.
+- **Submodules / repo pulling** *(pi parity backlog #5)* — pi hats can list
+  `submodules: all | [paths]`; on activation, `git pull --ff-only` runs in each repo in
+  the background to keep multi-repo sessions current. Ki assumes a single repo.
+  Priority: low, post-M14.
+- **Confluence cache config** *(pi parity backlog #6)* — pi's `kbconfig.yaml` has a
+  `confluence` section (cache dirs, page roots, depth, exclusions) backing a
+  `confluence_push` tool. Project-specific, not a general ki feature — leave to pi/scripts
+  unless ki specifically needs it; if so, a generic `[cache]` section for remote-doc
+  syncing would be the shape.
+- **Telemetry** *(pi parity backlog #7)* — pi logs sessions to JSONL served by a Flask
+  UI. Ki already has structured logging (logback, `.ki/logs/`) plus its session store;
+  likely unneeded, but event hooks + JSONL export could be added if a UI is wanted later.
+- **Hat/role switching with context reset** *(pi parity backlog #8)* — pi's `/hat`
+  selects a role (tools/skills/includes/model), compacting and resetting context on
+  switch. Ki is single-manifest-per-session; would need a `manifest` field referencing
+  other manifests + a `/role` command + compaction-on-switch. Priority: low, nice-to-have,
+  post-M14.
+- ~~`before_provider_request` skill filtering~~ *(pi parity backlog #9)* — **won't
+  implement**, moot under ki's single-manifest design (no per-hat skill set to filter).
 
 ---
 

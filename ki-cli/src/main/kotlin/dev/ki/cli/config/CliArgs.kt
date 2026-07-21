@@ -7,7 +7,14 @@ import java.nio.file.Path
  * CLI flag > env > manifest > default (applied in [Bootstrap]).
  */
 data class CliArgs(
+    /** Primary manifest; its directory is the project root. */
     val configPath: Path = Path.of("./ki.toml"),
+    /**
+     * Extra manifest files, deep-union-merged with [configPath] (see [Manifest.load]).
+     * When empty, [Bootstrap] auto-discovers sibling `ki.*.toml` files next to
+     * [configPath]; when non-empty, only the explicit set is loaded (no discovery).
+     */
+    val additionalConfigs: List<Path> = emptyList(),
     val model: String? = null,
     val dbPath: String? = null,
     /** Resume a specific session id. */
@@ -25,6 +32,7 @@ data class CliArgs(
         fun parse(argv: Array<String>): CliArgs {
             var args = CliArgs()
             val rest = ArrayList<String>()
+            var configSeen = false
             var i = 0
             fun next(flag: String): String {
                 if (i + 1 >= argv.size) error("Missing value for $flag")
@@ -32,7 +40,13 @@ data class CliArgs(
             }
             while (i < argv.size) {
                 when (val a = argv[i]) {
-                    "--config", "-c" -> args = args.copy(configPath = Path.of(next(a)))
+                    // First --config is the primary (drives the root); further ones add files.
+                    "--config", "-c" -> {
+                        val p = Path.of(next(a))
+                        args = if (!configSeen) args.copy(configPath = p)
+                        else args.copy(additionalConfigs = args.additionalConfigs + p)
+                        configSeen = true
+                    }
                     "--model", "-m" -> args = args.copy(model = next(a))
                     "--db" -> args = args.copy(dbPath = next(a))
                     "--resume", "-r" -> args = args.copy(resume = next(a))

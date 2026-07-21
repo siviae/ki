@@ -58,4 +58,85 @@ class ManifestTest {
         }
         assertTrue(e.message!!.contains("No ki.toml"), e.message)
     }
+
+    // --- M17: multi-file deep-union merge -----------------------------------
+
+    private fun file(dir: java.nio.file.Path, name: String, toml: String) =
+        dir.resolve(name).also { it.writeText(toml.trimIndent()) }
+
+    @Test fun `disjoint files merge into one manifest`() {
+        val dir = Files.createTempDirectory("ki-merge")
+        val a = file(dir, "ki.toml", """
+            [llm]
+            base_url = "http://proxy:4000"
+            api_key_env = "MY_KEY"
+            model = "fast"
+        """)
+        val b = file(dir, "ki.tools.toml", """
+            [tools.bash]
+
+            [models.fast]
+            id = "gpt-4o-mini"
+        """)
+        val m = Manifest.load(listOf(a, b))
+        assertEquals("http://proxy:4000", m.llm.baseUrl)
+        assertTrue(m.tools.containsKey("bash"))
+        assertEquals("gpt-4o-mini", m.models["fast"]?.id)
+    }
+
+    @Test fun `a shared section is assembled from disjoint keys across files`() {
+        val dir = Files.createTempDirectory("ki-merge")
+        val a = file(dir, "ki.toml", """
+            [llm]
+            base_url = "http://proxy:4000"
+            api_key_env = "MY_KEY"
+            model = "fast"
+
+            [tools.bash]
+        """)
+        val b = file(dir, "ki.more.toml", """
+            [tools.jira]
+            script = "tools/jira.ki.kts"
+        """)
+        val m = Manifest.load(listOf(a, b))
+        assertTrue(m.tools.containsKey("bash"))
+        assertEquals("tools/jira.ki.kts", m.tools["jira"]?.script)
+    }
+
+    @Test fun `same scalar key in two files errors and names the path and both files`() {
+        val dir = Files.createTempDirectory("ki-merge")
+        val a = file(dir, "ki.toml", """
+            [llm]
+            base_url = "http://proxy:4000"
+            api_key_env = "MY_KEY"
+            model = "fast"
+        """)
+        val b = file(dir, "ki.dup.toml", """
+            [llm]
+            model = "slow"
+        """)
+        val e = assertFailsWith<ManifestException> { Manifest.load(listOf(a, b)) }
+        assertTrue(e.message!!.contains("llm.model"), e.message)
+        assertTrue(e.message!!.contains("ki.toml"), e.message)
+        assertTrue(e.message!!.contains("ki.dup.toml"), e.message)
+    }
+
+    @Test fun `array key in two files is a conflict, not a concatenation`() {
+        val dir = Files.createTempDirectory("ki-merge")
+        val a = file(dir, "ki.toml", """
+            [llm]
+            base_url = "http://proxy:4000"
+            api_key_env = "MY_KEY"
+            model = "fast"
+
+            [context]
+            files = ["a.md"]
+        """)
+        val b = file(dir, "ki.ctx.toml", """
+            [context]
+            files = ["b.md"]
+        """)
+        val e = assertFailsWith<ManifestException> { Manifest.load(listOf(a, b)) }
+        assertTrue(e.message!!.contains("context.files"), e.message)
+    }
 }

@@ -11,6 +11,7 @@ import dev.ki.cli.store.SqliteCheckpointStore
 import dev.ki.cli.store.SqliteSessionStore
 import dev.ki.store.StoreChatHistoryProvider
 import dev.ki.store.StoreCheckpointProvider
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
 import kotlin.io.path.exists
@@ -42,8 +43,8 @@ class KiSession(
  */
 object Bootstrap {
     fun build(args: CliArgs, baseSystemPrompt: String): KiSession {
-        val manifest = Manifest.load(args.configPath)
         val root: Path = args.configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath()
+        val manifest = Manifest.load(resolveConfigPaths(args, root))
 
         val config = resolveConfig(args, manifest)
         val llm = KiLlm(config)
@@ -63,6 +64,25 @@ object Bootstrap {
             llm, tools, systemPrompt, store, provider, sessionId, checkpointProvider, args.prompt,
             config = config, models = manifest.models, usageMeter = UsageAccumulator(),
         )
+    }
+
+    /**
+     * The manifest files to merge: the primary [CliArgs.configPath] first, then either
+     * the explicit [CliArgs.additionalConfigs] or — when none were given — any sibling
+     * `ki.*.toml` files auto-discovered next to the primary. Discovered paths are sorted
+     * for deterministic error messages.
+     */
+    private fun resolveConfigPaths(args: CliArgs, root: Path): List<Path> {
+        if (args.additionalConfigs.isNotEmpty()) return listOf(args.configPath) + args.additionalConfigs
+        val primary = args.configPath.toAbsolutePath().normalize()
+        val siblings = try {
+            Files.newDirectoryStream(root, "ki.*.toml").use { stream ->
+                stream.map { it }.filter { it.toAbsolutePath().normalize() != primary }.sorted()
+            }
+        } catch (_: Exception) {
+            emptyList() // root missing/unreadable — Manifest.load reports the primary as missing
+        }
+        return listOf(args.configPath) + siblings
     }
 
     private fun resolveConfig(args: CliArgs, manifest: Manifest): KiConfig {
