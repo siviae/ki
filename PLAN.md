@@ -54,7 +54,8 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | M14 | Tool suite completion | ▢ Planned (was M11) |
 | M15 | Rich rendering & multi-provider | ▢ Planned (was M12) |
 | M16 | Integration & snapshot testing | ▢ Planned (was M13) |
-| M17 | Multi-file manifest config (no-override merge) | ▶ **In progress — pulled ahead as next work** |
+| M17 | Multi-file manifest config (no-override merge) | ✅ Done (commit `ce8bbd7`) |
+| M18 | Extension hooks (tool_call / tool_result / provider_request interceptors) | ▶ **Active — building now** |
 
 M8+ are the **most-reasonable reorganization of every deferred/backlog item** carried
 out of M1–M7 (each milestone below cites the milestone it inherits work from). M5
@@ -1416,6 +1417,126 @@ ambiguity entirely.
 
 ---
 
+## M18 — Extension hooks (tool_call / tool_result / provider_request interceptors)
+
+> **Sequencing:** the **active** work item — implemented immediately, ahead of M10–M16 in
+> execution order. Keeps the number M18 rather than renumbering into a lower slot: M10
+> (distributed) has shipped commits (`M10 orchestration loop`) and M11 depends on it, so
+> reusing M10 for hooks would make the number name two things and invert the M11→M10
+> dependency. Number is just a label; the ▶ status is what marks it next. Unblocks
+> `todos/ki-interceptors-plan.md` (porting pi's `bash-guard`, `rules`, `env-mask`
+> extensions), stalled purely on ki having no hook surface. Promotes the "Extension system"
+> residual item (pi parity backlog #4) into a real milestone.
+
+**Goal:** an extension can add **hooks** (behavioral interceptors), not just tools — so a
+`.ki.kts` module can validate/block/modify a tool call, post-process a tool result, and
+mask the outgoing LLM payload. Today an extension is degenerate: `ScriptToolLoader.load`
+compiles a script whose final expression must be a single `ScriptToolSpec` (`tool(...) {}`),
+returns exactly one tool, and there is no place to attach behavior around the loop.
+
+**Modules:** ki-agent (hook types, `InterceptorChain`, tool + executor wrappers, script DSL),
+ki-cli (Bootstrap wiring, `session_start`), ki-tui/ki-cli (blocked-call rendering).
+
+### Investigation findings — where ki can actually intercept
+
+Interception must be **strategy-independent**: `KiAgent` builds *two* koog graphs
+(`streamingStrategy()` and koog's `singleRunStrategyWithHistoryCompression`), so anything
+wired as a custom graph node has to be added to both (and would have to fabricate a
+`ReceivedToolResults` to represent a block). The two seams that both graphs funnel through —
+and that new graphs would inherit for free — are the **tool object** and the
+**`PromptExecutor`**. That, not "EventHandler is observe-only," is the deciding reason to
+wrap rather than add nodes. (koog's `EventHandler` `onToolCall*` callbacks are observe-only
+anyway — they cannot block or rewrite — so they are unusable for interception regardless.)
+
+| pi hook | ki seam (verified) | Mechanism |
+|---------|--------------------|-----------|
+| `tool_call` (permit/block/modify) | wrap each `Tool<JsonObject,String>` | koog runtime calls `ToolBase.executeUnsafe` (final) → `Tool.execute(args, metadata)` (final) → **abstract `execute(args)`**, which every ki tool (`ScriptTool`, `EditTool`) implements. A decorator subclassing `Tool<JsonObject,String>` and overriding `execute(args)` is guaranteed on the path — confirmed by decompiling `agents-tools-jvm-1.0.0-preview7`. |
+| `tool_result` | same tool wrapper | post-process the `String` result after `delegate.execute`. |
+| `before_provider_request` | wrap `KiLlm.executor` (`PromptExecutor`) | both graphs' LLM calls funnel through `llm.executor`; `RetryingPromptExecutor` + `DoubleEncodedArgsWorkaroundClient` are the existing precedent for delegating wrappers. Transform the `Prompt` before delegating. |
+| `session_start` | `Bootstrap.build` | invoke `onSessionStart(root)` once after the session is assembled, before the first turn. |
+| `turn_end` (auto-session-name) | `KiController` after `agent.run` returns | out of scope for M18 — deferred to the M15 rich-rendering/naming work; listed here only to map the full pi hook set. |
+
+### Design
+
+- **One `Extension` unit (not a separate `[hooks]` table).** pi unifies tools + hooks in one
+  extension, and the ask is exactly "extensions can also add hooks." A `.ki.kts` script's
+  result becomes an `Extension { tools: List<ScriptToolSpec>, hooks: List<Hook> }` instead of
+  a bare `ScriptToolSpec`. **Contract change point:** `ScriptToolLoader.valueOrThrow` currently
+  *requires* the final expression be a `ScriptToolSpec`; it must accept an `Extension`. A
+  script that ends in a lone `tool(...) {}` stays valid — the loader lifts a bare
+  `ScriptToolSpec` into a single-tool, zero-hook `Extension`, so every existing `[tools.*]`
+  script keeps working untouched.
+- **Script DSL** gains hook registrars alongside `tool { }`, collected into the returned
+  `Extension`: `onToolCall("bash") { args -> Permit | Block(reason) | Modify(newArgs) }`,
+  `onToolResult("read") { text -> newText }`, `onProviderRequest { prompt -> newPrompt }`,
+  `onSessionStart { root -> }`. A hook names the tool(s) it targets (or `*`); the chain only
+  wraps tools that at least one hook targets.
+- **`InterceptorChain`** (ki-agent) collects every loaded extension's hooks and exposes:
+  wrap a `Tool` in an `InterceptingTool` (runs `onToolCall` chain → on `Block` short-circuits
+  without calling the delegate; on `Modify` feeds new args in; runs `onToolResult` on the way
+  out), and wrap the `PromptExecutor` in an `InterceptingPromptExecutor` (runs the
+  `onProviderRequest` chain over `execute`/`executeStreaming`/`executeMultipleChoices`).
+  Ordering is load order (deterministic from the merged manifest); multiple `Modify`s compose.
+- **Wiring (Bootstrap):** after building tools + `KiLlm`, build the chain from loaded
+  extensions, map tools through `chain.wrap(tool)`, and replace `llm.executor` with
+  `chain.wrap(executor)` before constructing `KiAgent`. `KiAgent` itself is unchanged — it
+  receives already-wrapped tools and an already-wrapped executor.
+- **Two correctness constraints called out so they aren't found during implementation:**
+  - **Blocked call must be a distinct signal, not a fake-success.** A wrapper that returns a
+    `String` for a block makes koog's `EventHandler` fire `onToolCallCompleted`, so the UI
+    would paint a *blocked* call as **OK** (green). The `ToolCallEvent`/`ToolPhase` surface
+    (M9.2) needs a `BLOCKED` phase (or the wrapper throws a typed block so `onToolCallFailed`
+    fires) so the transcript distinguishes "model was denied" from "tool succeeded."
+  - **`onProviderRequest` must produce a *new* `Prompt`,** never mutate the one backing
+    persisted chat-memory — env-mask replacing secrets in-place would otherwise corrupt the
+    stored transcript. The wrapper builds a masked copy for the wire only.
+
+**Config**
+
+```toml
+[extensions.guards]
+script = "tools/guards.ki.kts"   # registers onToolCall/onToolResult hooks (+ optional tools)
+```
+
+`[tools.<name>]` stays the single-tool shorthand; `[extensions.<name>]` is the hook-bearing
+form. Both compile through `ScriptToolLoader`; the only difference is which manifest table
+lists them and that an extension may contribute hooks. (Open sub-decision: whether to fold
+`[tools]` entirely into `[extensions]` as pi does, or keep the shorthand — leaning keep, since
+the tool-only case is the common one and `[tools.bash]`-style bare builtins read cleanly.)
+
+**Deliverables**
+- `Extension`, `Hook` (`ToolCallHook`/`ToolResultHook`/`ProviderRequestHook`/`SessionStartHook`),
+  and `InterceptionResult = Permit | Block(reason) | Modify(args)` types in ki-agent.
+- Script DSL: `onToolCall`/`onToolResult`/`onProviderRequest`/`onSessionStart` registrars +
+  `Extension` return contract; `ScriptToolLoader` accepts `Extension` or lifts a bare
+  `ScriptToolSpec`.
+- `InterceptingTool` + `InterceptingPromptExecutor` + `InterceptorChain`.
+- `ToolPhase.BLOCKED` (or typed block exception) + renderer support for a blocked line.
+- Bootstrap: parse `[extensions.*]`, build the chain, wrap tools + executor, fire
+  `onSessionStart(root)`.
+- Unit tests: `onToolCall` block short-circuits (delegate never runs) and surfaces the reason;
+  `Modify` rewrites args seen by the delegate; two hooks on one tool compose in load order;
+  `onToolResult` transforms output; `onProviderRequest` masks a wire `Prompt` while the
+  persisted history keeps the raw value; a bare `tool(...) {}` script still loads as a
+  zero-hook extension.
+
+**Acceptance**
+- A `guards.ki.kts` extension registering `onToolCall("bash")` blocks a disallowed command:
+  the delegate never executes and the model receives the block reason as the tool result.
+- An `env-mask.ki.kts` extension registering `onProviderRequest` replaces a secret in the
+  outgoing payload; the same secret is still present verbatim in the persisted session store.
+- A project with only `[tools.*]` (no `[extensions]`) boots and behaves exactly as today.
+
+**Notes:** this milestone delivers only the *hook surface*; porting the three concrete pi
+extensions (`bash-guard`, `rules`, `env-mask`) is the follow-up tracked in
+`todos/ki-interceptors-plan.md` — that todo's "verify what hooks ki exposes" dependency is
+answered by the findings table above (Option C — hybrid Kotlin logic + thin `.ki.kts` glue —
+is the fit, since `InterceptorChain`/wrappers are compiled ki-agent code and the extension
+scripts are the glue). `commands` and `providers` from pi's extension model (backlog #4) stay
+out of scope; M18 is tools + hooks only.
+
+---
+
 ## Residual / opportunistic (not milestoned)
 
 Low-priority items that don't warrant their own milestone; fold into a nearby one if
@@ -1427,8 +1548,9 @@ convenient:
   local multi-connection use case appears.
 - **Extension system** *(pi parity backlog #4)* — pi auto-discovers `.pi/extensions/*.ts`
   as a runtime plugin mechanism (tools, commands, event handlers, providers), selectable
-  per-hat. Ki has no equivalent yet — builtins + `ScriptToolLoader`-compiled `.ki.kts`
-  script tools only, no runtime SPI. Priority: low, post-M14.
+  per-hat. **Tools + hooks promoted to M18** (extensions can add interceptors, not just
+  tools). Residual remainder: `commands` and `providers` as extension-contributed units, and
+  auto-discovery of an `extensions/` dir (M18 lists each extension in `[extensions.*]`).
 - **Submodules / repo pulling** *(pi parity backlog #5)* — pi hats can list
   `submodules: all | [paths]`; on activation, `git pull --ff-only` runs in each repo in
   the background to keep multi-repo sessions current. Ki assumes a single repo.
