@@ -2,7 +2,6 @@ package dev.ki.agent.hooks
 
 import ai.koog.agents.core.tools.Tool
 import ai.koog.agents.core.tools.ToolBase
-import ai.koog.agents.core.tools.ToolException
 import ai.koog.prompt.Prompt
 import ai.koog.prompt.dsl.ModerationResult
 import ai.koog.prompt.executor.model.PromptExecutor
@@ -62,15 +61,20 @@ class InterceptorChain(extensions: List<Extension>) {
         if (providerHooks.isEmpty()) executor else InterceptingPromptExecutor(executor, providerHooks)
 }
 
+/** Thrown by [InterceptingTool] when an `onToolCall` hook blocks the call. */
+class ToolBlockedException(reason: String) : RuntimeException(reason)
+
 /**
  * Decorates a `Tool<JsonObject, String>` with the `tool_call` / `tool_result` hooks that
  * target it. koog invokes tools via `ToolBase.executeUnsafe` → the final
  * `Tool.execute(args, metadata)` → this overridden abstract `execute(args)`, so the
  * decorator is guaranteed on the execution path regardless of which agent graph runs.
  *
- * A [InterceptionResult.Block] throws `ToolException.ValidationFailure`: koog catches it,
- * feeds the reason back to the model as the tool result, and fires `onToolCallFailed` — so
- * a blocked call is a distinct (error, not success) signal in the transcript.
+ * A [InterceptionResult.Block] throws [ToolBlockedException]: koog's generic tool-failure
+ * handler catches it, feeds the reason back to the model as the tool result (so the loop
+ * recovers), **and** fires `onToolCallFailed` — so a blocked call reads as ERROR in the
+ * transcript, never a green success. (A koog `ToolException` is caught on a different path
+ * that surfaces no terminal event, which would leave the UI line stuck "pending".)
  */
 class InterceptingTool(
     private val delegate: Tool<JsonObject, String>,
@@ -85,7 +89,7 @@ class InterceptingTool(
             when (val r = hook.fn(toolName, ToolArgs(current))) {
                 InterceptionResult.Permit -> {}
                 is InterceptionResult.Modify -> current = r.args
-                is InterceptionResult.Block -> throw ToolException.ValidationFailure(r.reason)
+                is InterceptionResult.Block -> throw ToolBlockedException(r.reason)
             }
         }
         var out = delegate.execute(current)

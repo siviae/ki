@@ -2,7 +2,6 @@ package dev.ki.agent.hooks
 
 import ai.koog.agents.core.tools.Tool
 import ai.koog.agents.core.tools.ToolDescriptor
-import ai.koog.agents.core.tools.ToolException
 import ai.koog.prompt.Prompt
 import ai.koog.prompt.dsl.ModerationResult
 import ai.koog.prompt.dsl.prompt
@@ -51,7 +50,7 @@ class InterceptorChainTest {
         val tool = RecordingTool("bash")
         val wrapped = wrap(tool, extension { onToolCall("bash") { _, _ -> InterceptionResult.Block("no rm") } })
 
-        val e = assertFailsWith<ToolException.ValidationFailure> {
+        val e = assertFailsWith<ToolBlockedException> {
             runBlocking { wrapped.execute(args("x")) }
         }
         assertTrue(e.message!!.contains("no rm"))
