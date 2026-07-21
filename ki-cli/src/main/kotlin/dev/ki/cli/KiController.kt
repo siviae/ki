@@ -26,7 +26,7 @@ class KiController(private val session: KiSession) : SlashContext {
     private var activeSessionId: String = session.sessionId
 
     private fun buildAgent(llm: KiLlm): KiAgent = KiAgent(
-        llm = llm,
+        llm = wrapExecutor(llm),
         systemPrompt = session.systemPrompt,
         tools = session.tools,
         historyProvider = session.historyProvider,
@@ -34,6 +34,16 @@ class KiController(private val session: KiSession) : SlashContext {
         checkpointProvider = session.checkpointProvider,
         streaming = true,
     )
+
+    /**
+     * Apply the session's `onProviderRequest` hooks to [llm]'s executor. Done per agent
+     * build (not once in Bootstrap) so a `/model` rebuild — which constructs a fresh
+     * [KiLlm] — keeps its provider-request interceptors. A no-op when no such hook exists.
+     */
+    private fun wrapExecutor(llm: KiLlm): KiLlm {
+        val wrapped = session.interceptors.wrap(llm.executor)
+        return if (wrapped === llm.executor) llm else KiLlm.of(wrapped, llm.defaultModel)
+    }
 
     /**
      * Run a turn under the active (possibly resumed) session id. [onReasoning] receives the

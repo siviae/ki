@@ -52,6 +52,26 @@ class ManifestTest {
         assertEquals("JIRA_TOKEN", jira.settings["token_env"])
     }
 
+    @Test fun `parses extensions section as script entries with settings`() {
+        val m = Manifest.load(
+            manifest(
+                """
+                [llm]
+                base_url = "http://proxy:4000"
+                api_key_env = "MY_KEY"
+                model = "fast"
+
+                [extensions.guards]
+                script = "tools/guards.ki.kts"
+                strict = true
+                """.trimIndent(),
+            ),
+        )
+        val guards = m.extensions["guards"]!!
+        assertEquals("tools/guards.ki.kts", guards.script)
+        assertEquals(true, guards.settings["strict"])
+    }
+
     @Test fun `missing manifest is a clear error`() {
         val e = assertFailsWith<ManifestException> {
             Manifest.load(Files.createTempDirectory("ki-none").resolve("ki.toml"))

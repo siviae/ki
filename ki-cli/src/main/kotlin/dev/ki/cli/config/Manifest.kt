@@ -31,6 +31,12 @@ data class Manifest(
     val context: ContextSection = ContextSection(),
     /** Tool name → entry. Builtins (see `BuiltinTools.NAMES`) need no `script`. */
     val tools: Map<String, ToolEntry> = emptyMap(),
+    /**
+     * Extension name → entry (each requires a `script`). Unlike a `[tools.*]` entry, an
+     * extension script may register lifecycle **hooks** (tool_call / tool_result /
+     * provider_request / session_start), not just tools. See the `extension-hooks` milestone.
+     */
+    val extensions: Map<String, ToolEntry> = emptyMap(),
     /** Optional named model catalog: alias → model metadata. */
     val models: Map<String, ModelEntry> = emptyMap(),
 ) {

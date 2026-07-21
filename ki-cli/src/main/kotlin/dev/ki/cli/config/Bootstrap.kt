@@ -3,6 +3,9 @@ package dev.ki.cli.config
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.snapshot.providers.PersistenceStorageProvider
 import dev.ki.agent.context.UsageAccumulator
+import dev.ki.agent.hooks.InterceptorChain
+import dev.ki.agent.tools.Extension
+import dev.ki.agent.tools.ScriptTool
 import dev.ki.agent.tools.ScriptToolLoader
 import dev.ki.agent.tools.builtin.BuiltinTools
 import dev.ki.ai.KiConfig
@@ -34,6 +37,8 @@ class KiSession(
     val models: Map<String, ModelEntry>,
     /** Cumulative token usage, shared across `/model` rebuilds. */
     val usageMeter: UsageAccumulator,
+    /** Extension hooks: wraps tools (done) and the LLM executor (re-applied on `/model`). */
+    val interceptors: InterceptorChain,
 )
 
 /**
@@ -48,7 +53,17 @@ object Bootstrap {
 
         val config = resolveConfig(args, manifest)
         val llm = KiLlm(config)
-        val tools = buildTools(manifest, root)
+
+        // Extensions contribute both tools and hooks; the chain wraps every tool it targets
+        // (builtins, script tools, and extension-contributed tools alike). The executor is
+        // wrapped later, per agent build (KiController), so a `/model` rebuild keeps its hooks.
+        val loader = ScriptToolLoader()
+        val extensions = buildExtensions(manifest, root, loader)
+        val interceptors = InterceptorChain(extensions)
+        val extensionTools = extensions.flatMap { it.tools }.map { ScriptTool(it) }
+        val tools = (buildTools(manifest, root, loader) + extensionTools).map { interceptors.wrap(it) }
+        interceptors.fireSessionStart(root)
+
         val systemPrompt = buildSystemPrompt(baseSystemPrompt, manifest, root)
 
         val dbPath = root.resolve(args.dbPath ?: manifest.db.path).normalize()
@@ -63,6 +78,7 @@ object Bootstrap {
         return KiSession(
             llm, tools, systemPrompt, store, provider, sessionId, checkpointProvider, args.prompt,
             config = config, models = manifest.models, usageMeter = UsageAccumulator(),
+            interceptors = interceptors,
         )
     }
 
@@ -108,9 +124,8 @@ object Bootstrap {
         )
     }
 
-    private fun buildTools(manifest: Manifest, root: Path): List<ToolBase<*, *>> {
+    private fun buildTools(manifest: Manifest, root: Path, loader: ScriptToolLoader): List<ToolBase<*, *>> {
         if (manifest.tools.isEmpty()) return emptyList()
-        val loader by lazy { ScriptToolLoader() }
         return manifest.tools.map { (name, entry) ->
             when {
                 entry.script != null -> {
@@ -125,6 +140,20 @@ object Bootstrap {
                     "Unknown tool '$name': not a builtin (${BuiltinTools.NAMES.joinToString()}) and no script path given."
                 )
             }
+        }
+    }
+
+    /** Load each `[extensions.<name>]` script (always a `script` path) into an [Extension]. */
+    private fun buildExtensions(manifest: Manifest, root: Path, loader: ScriptToolLoader): List<Extension> {
+        if (manifest.extensions.isEmpty()) return emptyList()
+        return manifest.extensions.map { (name, entry) ->
+            val script = entry.script
+                ?: throw ManifestException("Extension '$name' requires a `script` path.")
+            val file = root.resolve(script).normalize().toFile()
+            if (!file.exists()) throw ManifestException(
+                "Extension '$name' points to a missing script: $file"
+            )
+            loader.loadExtension(file)
         }
     }
 

@@ -51,6 +51,10 @@ class ScriptToolLoader(
             defaultImports(
                 "dev.ki.agent.tools.*",
                 "kotlinx.serialization.json.*",
+                // For `onProviderRequest { prompt -> ... }` in extension scripts.
+                "ai.koog.prompt.Prompt",
+                "ai.koog.prompt.dsl.prompt",
+                "ai.koog.prompt.message.*",
             )
             jvm { dependenciesFromCurrentContext(wholeClasspath = true) }
         }
@@ -66,6 +70,28 @@ class ScriptToolLoader(
         return ScriptTool(spec)
     }
 
+    /**
+     * Compile+evaluate one script into an [Extension]. A script ending in
+     * `extension { ... }` yields its tools + hooks; a script ending in a bare
+     * `tool("...") { ... }` is lifted into a single-tool, zero-hook extension, so a
+     * plain tool script is a valid extension too. Throws on failure.
+     */
+    fun loadExtension(file: File): Extension {
+        val result = host.eval(
+            file.toScriptSource(),
+            compilationConfig,
+            ScriptEvaluationConfiguration(),
+        )
+        return when (val value = result.returnValueOrThrow(file)) {
+            is Extension -> value
+            is ScriptToolSpec -> Extension(tools = listOf(value))
+            else -> error(
+                "Extension script ${file.name} must end with an `extension { ... }` " +
+                    "or a `tool(\"...\") { ... }` expression"
+            )
+        }
+    }
+
     /** Discover and compile every `*.ki.kts` under [dir]. */
     fun loadAll(dir: File): List<ScriptTool> {
         if (!dir.isDirectory) return emptyList()
@@ -75,7 +101,12 @@ class ScriptToolLoader(
             .map { load(it) }
     }
 
-    private fun ResultWithDiagnostics<*>.valueOrThrow(file: File): ScriptToolSpec {
+    private fun ResultWithDiagnostics<*>.valueOrThrow(file: File): ScriptToolSpec =
+        returnValueOrThrow(file) as? ScriptToolSpec
+            ?: error("Tool script ${file.name} must end with a `tool(\"...\") { ... }` expression")
+
+    /** The script's final-expression value, or throw a rendered compile error. May be null. */
+    private fun ResultWithDiagnostics<*>.returnValueOrThrow(file: File): Any? {
         val evaluated = when (this) {
             is ResultWithDiagnostics.Success -> value
             is ResultWithDiagnostics.Failure -> {
@@ -86,9 +117,7 @@ class ScriptToolLoader(
             }
         }
         val returnValue = (evaluated as kotlin.script.experimental.api.EvaluationResult).returnValue
-        val value = (returnValue as? ResultValue.Value)?.value
-        return value as? ScriptToolSpec
-            ?: error("Tool script ${file.name} must end with a `tool(\"...\") { ... }` expression")
+        return (returnValue as? ResultValue.Value)?.value
     }
 
     companion object {
