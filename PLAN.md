@@ -63,7 +63,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | `rich-rendering` | M15 | Rich rendering & multi-provider | ▢ Planned |
 | `integration-testing` | M16 | Integration & snapshot testing | ▢ Planned |
 | `multifile-config` | M17 | Multi-file manifest config (no-override merge) | ✅ Done (commit `ce8bbd7`) |
-| `extension-hooks` | M18 | Extension hooks (tool_call / tool_result / provider_request interceptors) | ▶ **Active — building now** |
+| `extension-hooks` | M18 | Extension hooks (tool_call / tool_result / provider_request interceptors) | ◐ Hook surface shipped (block/modify/result/provider, koog-dispatch verified); porting pi's bash-guard/rules/env-mask is the follow-up |
 
 New milestones from here get a **slug only** — no new M-number is minted (the number column
 stops at M18). M8+ are the **most-reasonable reorganization of every deferred/backlog item** carried
