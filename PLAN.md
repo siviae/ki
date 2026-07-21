@@ -33,39 +33,79 @@ deliverables, the modules touched, and acceptance criteria you can check against
 
 ## Milestone status
 
-| # | Milestone | Status |
-|---|-----------|--------|
-| M1 | End-to-end vertical slice | ✅ Done (commit `6b8a812`) |
-| M2 | Native TUI framework (ki-tui), drop casciian | ✅ Done (commit `e4d7b3a`) |
-| M3 | Core file & shell toolset | ✅ Done |
-| M4 | Config, model catalog, sessions & context | ✅ Done |
-| M5 | Tool permissions & approval | ▢ Deferred (yolo mode for now) |
-| M6 | Context & token management | ✅ Done |
-| M7 | TUI: slash commands, cancel, cost | ✅ Done (streaming deferred) |
-| M8 | Robustness: retry, tool-errors, process-kill, logging | ✅ Done (checkpoints split to M9) |
-| M9 | Persistence: checkpoints, crash recovery & resume | ✅ Done |
-| M9.1 | Streaming model reasoning (thinking) blocks to the terminal | ✅ Done |
-| M9.2 | Colored tool-call lines in the transcript (pi-style) | ✅ Done |
-| M9.3 | Tool-call result preview + Ctrl-O expand; koog double-encode fix | ✅ Done |
-| M10 | Distributed multi-node ki (Spring/Postgres) | ◐ Primitives + orchestration loop done (Postgres-verified); LISTEN/NOTIFY + real-agent e2e left |
-| M11 | RocketChat bot reference implementation | ◐ Designed (verified surface); build pending M10 loop |
-| M12 | Packaging & distribution | ▢ Planned (was M9) |
-| M13 | Live streaming & interactive TUI | ▢ Planned (was M10) |
-| M14 | Tool suite completion | ▢ Planned (was M11) |
-| M15 | Rich rendering & multi-provider | ▢ Planned (was M12) |
-| M16 | Integration & snapshot testing | ▢ Planned (was M13) |
-| M17 | Multi-file manifest config (no-override merge) | ✅ Done (commit `ce8bbd7`) |
-| M18 | Extension hooks (tool_call / tool_result / provider_request interceptors) | ▶ **Active — building now** |
+> **Reference by slug, not number.** The **slug** is a milestone's permanent identity —
+> assigned once, never changed, never reused — and is the key used in prose (`[[slug]]`),
+> commit scopes (`feat(...): … (extension-hooks)`), and todos. The **M-number** is a frozen
+> historical alias only (shipped commits cite it); it is never renumbered and never the
+> reference key. **Order is metadata, not identity:** what runs next is the `▶` status +
+> `depends-on`, so reprioritizing changes a status, never an ID. See
+> [Milestone identity & ordering](#milestone-identity--ordering-convention) below.
 
-M8+ are the **most-reasonable reorganization of every deferred/backlog item** carried
+| Slug | # (legacy) | Milestone | Status · depends-on |
+|------|-----------|-----------|---------------------|
+| `vertical-slice` | M1 | End-to-end vertical slice | ✅ Done (commit `6b8a812`) |
+| `native-tui` | M2 | Native TUI framework (ki-tui), drop casciian | ✅ Done (commit `e4d7b3a`) |
+| `core-tools` | M3 | Core file & shell toolset | ✅ Done |
+| `config-catalog` | M4 | Config, model catalog, sessions & context | ✅ Done |
+| `tool-permissions` | M5 | Tool permissions & approval | ▢ Deferred (yolo mode for now) |
+| `context-tokens` | M6 | Context & token management | ✅ Done |
+| `tui-slash-commands` | M7 | TUI: slash commands, cancel, cost | ✅ Done (streaming deferred) |
+| `robustness` | M8 | Robustness: retry, tool-errors, process-kill, logging | ✅ Done |
+| `checkpoints` | M9 | Persistence: checkpoints, crash recovery & resume | ✅ Done |
+| `streaming-reasoning` | M9.1 | Streaming model reasoning (thinking) blocks to the terminal | ✅ Done |
+| `tool-call-lines` | M9.2 | Colored tool-call lines in the transcript (pi-style) | ✅ Done |
+| `result-preview` | M9.3 | Tool-call result preview + Ctrl-O expand; koog double-encode fix | ✅ Done |
+| `distributed-multinode` | M10 | Distributed multi-node ki (Spring/Postgres) | ◐ Primitives + loop done (Postgres-verified); LISTEN/NOTIFY + real-agent e2e left · dep `checkpoints` |
+| `rocketchat-bot` | M11 | RocketChat bot reference implementation | ◐ Designed (verified surface) · dep `distributed-multinode` |
+| `packaging` | M12 | Packaging & distribution | ▢ Planned |
+| `interactive-tui` | M13 | Live streaming & interactive TUI | ▢ Planned |
+| `tool-suite` | M14 | Tool suite completion | ▢ Planned |
+| `rich-rendering` | M15 | Rich rendering & multi-provider | ▢ Planned |
+| `integration-testing` | M16 | Integration & snapshot testing | ▢ Planned |
+| `multifile-config` | M17 | Multi-file manifest config (no-override merge) | ✅ Done (commit `ce8bbd7`) |
+| `extension-hooks` | M18 | Extension hooks (tool_call / tool_result / provider_request interceptors) | ▶ **Active — building now** |
+
+New milestones from here get a **slug only** — no new M-number is minted (the number column
+stops at M18). M8+ are the **most-reasonable reorganization of every deferred/backlog item** carried
 out of M1–M7 (each milestone below cites the milestone it inherits work from). M5
 (permissions) is intentionally skipped for now and picked up later.
 
-**Renumber note:** the old **M8b** (agent-persistence checkpoints) is now **M9**, and
-**two new milestones were inserted** — **M10** (distributed multi-node) and **M11**
-(RocketChat bot). So former M9–M13 each shift **up by 3** to M12–M16. The insert order
-follows the dependency chain: **resume/checkpoints (M9) → distributed failover (M10) →
-RocketChat bot (M11)** — the bot is a consumer of the distributed session layer.
+**Renumber note (historical — why slugs exist):** the old **M8b** (checkpoints) became
+**M9**, and two milestones were *inserted* (distributed multi-node, RocketChat bot), shifting
+former M9–M13 **up by 3**. That shift is exactly the failure the slug scheme retires: numbers
+that move break every commit/prose reference to them. The `(was M9)` parentheticals and this
+note are the scars. Under slugs, an insert or reprioritization touches no existing identity.
+
+---
+
+## Milestone identity & ordering (convention)
+
+The problem numbers caused: an M-number encoded **identity** *and* **execution order** in one
+token, and that token leaked into immutable places — commit scopes (`feat(...): … (M18)`),
+cross-references, and `todos/*`. Reprioritizing a milestone forced a renumber; a renumber
+broke every reference; and reusing a freed number (the M10 case) made one number name two
+different milestones. Order and identity must not share a token.
+
+**The rules:**
+
+1. **Slug = permanent identity.** Each milestone gets one kebab-case slug at creation
+   (`extension-hooks`, `distributed-multinode`). It is assigned once, **never changed, never
+   reused** even if the milestone is dropped. It is the only reference key.
+2. **Order is metadata, never identity.** What runs next is the `▶` **status** plus an explicit
+   **`depends-on: [slug]`** list — not a low number. Reprioritizing flips a status; inserting
+   work adds a slug. No existing ID ever moves, so no reference ever breaks.
+3. **Reference by slug everywhere.** Prose links `[[distributed-multinode]]`; commit scopes end
+   `(extension-hooks)`; `todos/*` cite slugs. Never cite a milestone by number in new text.
+4. **M-numbers are frozen aliases.** They stay in the table's `# (legacy)` column solely
+   because shipped commits (`M10 orchestration loop`, `M17`) already reference them. No new
+   M-number is minted; the sequence ends at M18. New milestones are slug-only.
+5. **No global reordering pass.** The table is grouped roughly by theme/history for reading; it
+   is *not* an execution queue. The queue is derived: runnable = status not-done **and** every
+   `depends-on` slug done.
+
+This is why the current work stays `extension-hooks` (`M18`) rather than being renumbered into
+the M10 slot: the number was never the point — the `▶` status is what marks it next, and
+`distributed-multinode` keeps its identity and its commit history intact.
 
 ---
 
@@ -1417,16 +1457,17 @@ ambiguity entirely.
 
 ---
 
-## M18 — Extension hooks (tool_call / tool_result / provider_request interceptors)
+## `extension-hooks` — Extension hooks (tool_call / tool_result / provider_request interceptors)
 
-> **Sequencing:** the **active** work item — implemented immediately, ahead of M10–M16 in
-> execution order. Keeps the number M18 rather than renumbering into a lower slot: M10
-> (distributed) has shipped commits (`M10 orchestration loop`) and M11 depends on it, so
-> reusing M10 for hooks would make the number name two things and invert the M11→M10
-> dependency. Number is just a label; the ▶ status is what marks it next. Unblocks
-> `todos/ki-interceptors-plan.md` (porting pi's `bash-guard`, `rules`, `env-mask`
-> extensions), stalled purely on ki having no hook surface. Promotes the "Extension system"
-> residual item (pi parity backlog #4) into a real milestone.
+*Slug: `extension-hooks` · legacy alias M18 · depends-on: none (builds on shipped `core-tools`,
+`result-preview`).*
+
+> **Sequencing:** the **active** work item (`▶`) — implemented immediately. Its slug is its
+> identity; the `▶` status is what marks it next, not its number (see
+> [Milestone identity & ordering](#milestone-identity--ordering-convention)). Unblocks
+> `todos/ki-interceptors-plan.md` (porting pi's `bash-guard`, `rules`, `env-mask` extensions),
+> stalled purely on ki having no hook surface. Promotes the "Extension system" residual item
+> (pi parity backlog #4) into a real milestone.
 
 **Goal:** an extension can add **hooks** (behavioral interceptors), not just tools — so a
 `.ki.kts` module can validate/block/modify a tool call, post-process a tool result, and
