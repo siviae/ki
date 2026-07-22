@@ -73,6 +73,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | `extension-hooks` | M18 | Extension hooks (tool_call / tool_result / provider_request interceptors) | ◐ Hook surface shipped (block/modify/result/provider, koog-dispatch verified); porting pi's bash-guard/rules/env-mask is the follow-up |
 | `module-consolidation` | — | Merge `ki-ai` into `ki-agent`; rename `ki-cluster` → `ki-spring` | ✅ Done |
 | `extension-config` | — | Typed config model in ki-agent; extensions register their own config type, filled from the merged manifest | ✅ Done |
+| `prompt-mapmessages` | — | `Prompt.mapMessages { }` — deep-copy masking for `onProviderRequest` (whole-prompt secret scrub) | ✅ Done |
 
 New milestones from here get a **slug only** — no new M-number is minted (the number column
 stops at M18). M8+ are the **most-reasonable reorganization of every deferred/backlog item** carried
@@ -1740,6 +1741,44 @@ rejected the inline `config<T>()` DSL) — `ScriptToolLoader` `CACHE_VERSION` bu
 
 **Notes:** supersedes the earlier `ExtensionContext` / `providedProperties` sketch entirely —
 config now arrives via the typed handle; `root` still arrives via `onSessionStart(root)`.
+
+---
+
+## prompt-mapmessages — whole-prompt masking helper for `onProviderRequest`
+
+*Slug: `prompt-mapmessages` · no M-number · depends-on: [`extension-hooks`] (the hook it serves).
+Status: ✅ shipped.*
+
+**Goal:** make `onProviderRequest` masking actually usable. The only prior pattern
+(`prompt(pr.id) { user(maskedText) }`) **dropped every message but the last user turn** — no
+system prompt, no assistant/tool history — so a real env-mask (scrub secrets from *every* span)
+was impossible. Requested by the knowledge-base env-mask interceptor.
+
+**Deliverable:** `fun Prompt.mapMessages(transform: (String) -> String): Prompt` in ki-agent
+(`dev.ki.agent.tools`, so extension scripts get it via the existing default-import). Deep-copies
+the prompt applying [transform] to every text span, preserving message order/type, ids/names,
+non-text parts, and per-message metadata via data-class `copy`.
+
+**What is transformed** (pinned against koog's actual sealed types — `Message` = `System`/`User`/
+`Assistant` only, no `Message.Tool`): `Text.text`, `Tool.Result.output`, `Tool.Call.args`, and
+`Reasoning.content`/`summary`. **`Tool.Call.args` is masked** — a tool takes its secrets from its
+own config, never from LLM-produced args, so a secret there is always illegitimate; masking is
+JSON-safe (value replacement) and closes the leak of past tool calls to the provider as history.
+Left as-is: `Attachment` (binary), `Reasoning.encrypted` (opaque), all ids/names/metadata; unknown
+message/part types pass through (`Message` is an interface, so `is` + `else`-keep, not exhaustive).
+
+**Threat-model note:** this is the **provider-facing** path only (what the external LLM sees). It
+does **not** govern what a tool receives — tools execute with real args from session state via the
+`onToolCall` path, not the masked copy. Env-mask therefore pairs `onProviderRequest`
+(`mapMessages`) with `onToolResult` (scrub secrets in tool output before it flows back).
+
+**Tests** (`PromptMappingTest`): masks every span across all message/part types; preserves order,
+types, ids, names, tool-call `id`/`tool`, count; masks `Tool.Call.args` JSON-safely; does not
+mutate the original (which backs persisted chat-memory).
+
+**Follow-up:** the knowledge-base `ki-prompt-map-messages-feature-request.md` is satisfied (its
+assumed 4-type `Message` hierarchy was wrong — 3 types — and it hadn't decided on masking
+`Tool.Call.args`, which we do).
 
 ---
 

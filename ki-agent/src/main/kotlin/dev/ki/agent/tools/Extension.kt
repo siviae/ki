@@ -47,6 +47,9 @@ class ToolResultHook(
  * secret masking). It **must return a new [Prompt]**, never mutate the one it is given —
  * that same object backs persisted chat-memory, so mutating it would corrupt the stored
  * transcript. Kept synchronous so it also applies on the streaming (`Flow`) path.
+ *
+ * For whole-prompt masking use [Prompt.mapMessages] `{ text -> ... }`, which deep-copies the
+ * prompt applying a transform to every text span across all message/part types.
  */
 class ProviderRequestHook(val fn: (Prompt) -> Prompt)
 
