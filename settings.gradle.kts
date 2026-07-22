@@ -6,4 +6,4 @@ dependencyResolutionManagement {
     }
 }
 
-include(":ki-ai", ":ki-agent", ":ki-tui", ":ki-cli", ":ki-cluster")
+include(":ki-agent", ":ki-tui", ":ki-cli", ":ki-spring")

@@ -2,7 +2,7 @@ package dev.ki.store
 
 /**
  * Distributed single-owner coordination for a session — the M10 seam ki-agent exposes and
- * the `ki-cluster` Postgres module implements (advisory locks). Local/CLI deployments never
+ * the `ki-spring` Postgres module implements (advisory locks). Local/CLI deployments never
  * touch this; it exists so a **multi-node** deployment runs each session on exactly one node
  * and, when that node dies, lets another take over from the last M9 checkpoint.
  *

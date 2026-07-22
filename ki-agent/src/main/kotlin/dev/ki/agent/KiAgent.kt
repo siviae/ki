@@ -77,7 +77,7 @@ data class ToolCallEvent(val id: String, val name: String, val args: String, val
  * into the same `Message.Assistant` the blocking node would have produced — so the tool
  * loop, M6 compression, and checkpointing are unchanged. Usage is recorded from the
  * folded response inside the node (the streaming path does not fire `onLLMCallCompleted`).
- * Default off, so `ki-cluster` and tests keep the proven blocking path.
+ * Default off, so `ki-spring` and tests keep the proven blocking path.
  */
 class KiAgent(
     private val llm: KiLlm,

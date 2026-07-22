@@ -14,7 +14,7 @@ import kotlin.test.assertTrue
  * Postgres-only, so the offline SQLite tests can't cover them). Self-skips unless `KI_IT=1`
  * and Docker is reachable — same discipline as the other live-wire tests.
  *
- *   KI_IT=1 ./gradlew :ki-cluster:test
+ *   KI_IT=1 ./gradlew :ki-spring:test
  */
 class CoordinationIT {
 

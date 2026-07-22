@@ -2,7 +2,7 @@ package dev.ki.store
 
 /**
  * Runs one agent turn for a session — the seam between M10's coordination loop and the actual
- * agent. The `ki-cluster` `SessionWorker` owns *when* and *where* a turn runs (claim, drain,
+ * agent. The `ki-spring` `SessionWorker` owns *when* and *where* a turn runs (claim, drain,
  * release); the **host** supplies *how* by implementing this — building a `KiAgent` with the
  * session's history + checkpoint providers and calling `run`. This keeps the coordination
  * module free of model/tool/prompt configuration (the host owns that), mirroring how the CLI

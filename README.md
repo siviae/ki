@@ -4,12 +4,13 @@ JVM agent harness, heavily inspired by [pi.dev](https://github.com/earendil-work
 
 ## Goal
 
-Reimplement pi's architecture on the JVM in Kotlin, as four layered components:
+Reimplement pi's architecture on the JVM in Kotlin, as three layered components:
 
-1. **Unified LLM API** (`ki-ai`) — single abstraction over LLM providers. Initially targets [LiteLLM](https://github.com/BerriAI/litellm) only.
-2. **Agent runtime** (`ki-agent`) — tool calling and state management, built on the LLM API. Tools are authored as Kotlin scripts, compiled automatically on startup.
-3. **Native TUI framework** (`ki-tui`) — a dependency-free terminal UI with differential rendering and synchronized output, a Kotlin port of pi's [`packages/tui`](https://github.com/earendil-works/pi/tree/main/packages/tui).
-4. **Interactive coding agent CLI** (`ki-cli`) — TUI front-end built on `ki-tui`, using the agent runtime.
+1. **Agent runtime** (`ki-agent`) — the unified LLM API (`dev.ki.ai`: single abstraction over providers, LiteLLM first) plus tool calling and state management on top of it. Tools are authored as Kotlin scripts, compiled automatically on startup.
+2. **Native TUI framework** (`ki-tui`) — a dependency-free terminal UI with differential rendering and synchronized output, a Kotlin port of pi's [`packages/tui`](https://github.com/earendil-works/pi/tree/main/packages/tui).
+3. **Interactive coding agent CLI** (`ki-cli`) — TUI front-end built on `ki-tui`, using the agent runtime.
+
+A fourth module, **`ki-spring`**, is the optional Spring/Postgres reference implementation of the distributed session store + coordination seams (not on the CLI's classpath).
 
 ## Stack
 

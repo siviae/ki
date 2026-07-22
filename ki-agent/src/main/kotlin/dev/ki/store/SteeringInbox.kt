@@ -5,7 +5,7 @@ data class SteeringMessage(val seq: Long, val payload: String)
 
 /**
  * Out-of-band input delivery for a session — the M10 seam ki-agent exposes and the
- * `ki-cluster` Postgres module implements (a durable inbox table). It is the **per-session
+ * `ki-spring` Postgres module implements (a durable inbox table). It is the **per-session
  * message queue** for every message after the first: **any** node [write]s a row, and the
  * node that runs the session's next turn drains it. This one mechanism covers both M11 cases —
  * a mid-session user follow-up and a RocketChat thread continuation.

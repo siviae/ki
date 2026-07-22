@@ -3,12 +3,19 @@
 JVM port of [pi](https://github.com/earendil-works/pi), an interactive coding agent,
 reimplemented in Kotlin on [koog](https://github.com/JetBrains/koog). Layered modules:
 
-- **ki-ai** — unified LLM API over providers (LiteLLM first), model catalog.
-- **ki-agent** — tool-calling agent runtime; tools authored as Kotlin scripts,
-  compiled on startup.
+- **ki-agent** — tool-calling agent runtime **and** the unified LLM API over providers
+  (LiteLLM first, model catalog) in its `dev.ki.ai` package; tools authored as Kotlin
+  scripts, compiled on startup. *(The former `ki-ai` module was merged in — see the
+  [`module-consolidation`](#module-consolidation--merge-ki-ai-into-ki-agent-rename-ki-cluster-to-ki-spring) milestone.)*
 - **ki-tui** — native terminal UI framework (differential rendering, no external
   TUI dependency), a Kotlin port of pi's [`packages/tui`](https://github.com/earendil-works/pi/tree/main/packages/tui).
 - **ki-cli** — interactive TUI coding agent built on **ki-tui**, driving ki-agent.
+- **ki-spring** — optional Spring/Postgres reference impl of the distributed session
+  store + coordination seams (formerly `ki-cluster`; off the CLI classpath).
+
+> **Note on module names in historical milestone bodies:** older milestones below still
+> say `ki-ai` and `ki-cluster` (the names at the time they were written), just as shipped
+> commits keep their `M`-numbers. Current module names are the four above.
 
 This document is the roadmap. **M1–M3 are complete**; M4+ are the plan for
 continuing the build locally. Each milestone lists a goal, the concrete
@@ -64,6 +71,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | `integration-testing` | M16 | Integration & snapshot testing | ▢ Planned |
 | `multifile-config` | M17 | Multi-file manifest config (no-override merge) | ✅ Done (commit `ce8bbd7`) |
 | `extension-hooks` | M18 | Extension hooks (tool_call / tool_result / provider_request interceptors) | ◐ Hook surface shipped (block/modify/result/provider, koog-dispatch verified); porting pi's bash-guard/rules/env-mask is the follow-up |
+| `module-consolidation` | — | Merge `ki-ai` into `ki-agent`; rename `ki-cluster` → `ki-spring` | ✅ Done |
 
 New milestones from here get a **slug only** — no new M-number is minted (the number column
 stops at M18). M8+ are the **most-reasonable reorganization of every deferred/backlog item** carried
@@ -1575,6 +1583,44 @@ answered by the findings table above (Option C — hybrid Kotlin logic + thin `.
 is the fit, since `InterceptorChain`/wrappers are compiled ki-agent code and the extension
 scripts are the glue). `commands` and `providers` from pi's extension model (backlog #4) stay
 out of scope; M18 is tools + hooks only.
+
+---
+
+## module-consolidation — merge ki-ai into ki-agent, rename ki-cluster to ki-spring
+
+*Slug: `module-consolidation` · no M-number (slug-only, per the identity convention) · depends-on: none.*
+
+**Goal:** shrink the module graph to what the layering actually needs. `ki-ai` (the LLM API
+layer) was a separate Gradle module consumed only by `ki-agent`, which re-exported it wholesale
+(`api(project(":ki-ai"))`) — a module boundary with no independent consumer, so it bought
+nothing but an extra build unit. And `ki-cluster` is defined entirely by being the
+Spring/Postgres reference impl, so its name should say so.
+
+**Modules:** build/layout only — no behavior change.
+
+**Deliverables**
+- **`ki-ai` merged into `ki-agent`.** Sources moved (history-preserving `git mv`) into
+  `ki-agent`, keeping the **`dev.ki.ai` package** unchanged — so no import churn in `ki-cli`
+  or the `ki-agent` tests. `ki-ai`'s dependencies (koog, `kotlinx-coroutines-core` as `api`,
+  `kotlinx-serialization-json`) fold into `ki-agent`'s build; the `api(project(":ki-ai"))`
+  line and the module directory are removed, and `:ki-ai` drops out of `settings.gradle.kts`.
+  The old `dev.ki.ai.Main` LiteLLM smoke `main()` is retained as a plain entrypoint (the
+  `application` plugin it used did not move — `ki-cli` is the real app).
+- **`ki-cluster` renamed to `ki-spring`.** Directory renamed (`git mv`), `settings.gradle.kts`
+  updated (`:ki-cluster` → `:ki-spring`). It is a leaf module (nothing depends on it but the
+  build), so the rename is self-contained. The **`dev.ki.cluster` package is kept** (module
+  name ≠ package name is already true across the repo, e.g. `ki-agent` holding `dev.ki.ai`);
+  the existing `dev.ki.store.spring` package is already Spring-named.
+- Module graph after: `ki-agent` (runtime + LLM API), `ki-tui`, `ki-cli`, `ki-spring`.
+
+**Acceptance**
+- `./gradlew build` green with three first-party modules + `ki-spring`; no `:ki-ai` project.
+- No source import changes required (`dev.ki.ai.*` / `dev.ki.cluster.*` resolve as before).
+
+**Notes:** package names deliberately **not** renamed — that would be pure churn against
+stable identities (the same reasoning as keeping frozen `M`-numbers). Historical milestone
+bodies above still reference `ki-ai` / `ki-cluster` by their then-current names; the module
+list at the top of this file is the current source of truth.
 
 ---
 

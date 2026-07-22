@@ -7,11 +7,11 @@ serialization = "1.9.0"
 nuprocess = "3.0.0" # 4.0.0 targets Java 25 bytecode; 3.0.0 (Java 7) works on JDK 21
 sqlite = "3.47.1.0"
 jackson = "2.18.2" # prod serializer: our own config/manifest/catalog types (not koog Message)
-spring = "6.2.1" # spring-jdbc/context for the optional ki-cluster module only
+spring = "6.2.1" # spring-jdbc/context for the optional ki-spring module only
 kotlinLogging = "8.0.01" # matches koog's transitive version; slf4j-2 facade
 logback = "1.5.12" # slf4j-2 backend; ki-cli only (the app owns the log sink)
-postgresql = "42.7.4" # ki-cluster tests/IT only; host app provides the driver in prod
-testcontainers = "1.20.4" # ki-cluster advisory-lock/steering IT (needs Docker; self-skips)
+postgresql = "42.7.4" # ki-spring tests/IT only; host app provides the driver in prod
+testcontainers = "1.20.4" # ki-spring advisory-lock/steering IT (needs Docker; self-skips)
 
 [libraries]
 koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
@@ -30,11 +30,11 @@ jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", ver
 jackson-module-kotlin = { module = "com.fasterxml.jackson.module:jackson-module-kotlin", version.ref = "jackson" }
 jackson-dataformat-toml = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-toml", version.ref = "jackson" }
 
-# Spring — remote store + distributed coordination reference impl (ki-cluster only)
+# Spring — remote store + distributed coordination reference impl (ki-spring only)
 spring-jdbc = { module = "org.springframework:spring-jdbc", version.ref = "spring" }
 spring-context = { module = "org.springframework:spring-context", version.ref = "spring" }
 
-# Postgres driver + Testcontainers — ki-cluster coordination IT only (advisory locks are
+# Postgres driver + Testcontainers — ki-spring coordination IT only (advisory locks are
 # Postgres-only, so these can't be covered by the offline SQLite tests)
 postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
 testcontainers-postgresql = { module = "org.testcontainers:postgresql", version.ref = "testcontainers" }
