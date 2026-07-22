@@ -8,6 +8,7 @@ import kotlin.script.experimental.api.ResultWithDiagnostics
 import kotlin.script.experimental.api.ScriptCompilationConfiguration
 import kotlin.script.experimental.api.ScriptDiagnostic
 import kotlin.script.experimental.api.ScriptEvaluationConfiguration
+import kotlin.script.experimental.api.compilerOptions
 import kotlin.script.experimental.api.defaultImports
 import kotlin.script.experimental.host.ScriptingHostConfiguration
 import kotlin.script.experimental.host.toScriptSource
@@ -56,6 +57,9 @@ class ScriptToolLoader(
                 "ai.koog.prompt.dsl.prompt",
                 "ai.koog.prompt.message.*",
             )
+            // Match ki-agent's target so inline DSL fns (e.g. `config<T>()`) inline into scripts;
+            // the scripting host otherwise defaults to JVM 1.8 and rejects the JVM-21 bytecode.
+            compilerOptions("-jvm-target", "21")
             jvm { dependenciesFromCurrentContext(wholeClasspath = true) }
         }
 
@@ -121,7 +125,7 @@ class ScriptToolLoader(
     }
 
     companion object {
-        private const val CACHE_VERSION = "v1"
+        private const val CACHE_VERSION = "v2" // bumped: JVM target 21 + extension config DSL
         private fun cacheKey(source: String): String {
             val digest = MessageDigest.getInstance("SHA-256")
                 .digest((CACHE_VERSION + source).toByteArray())

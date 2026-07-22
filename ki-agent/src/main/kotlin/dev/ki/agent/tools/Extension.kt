@@ -3,6 +3,7 @@ package dev.ki.agent.tools
 import ai.koog.prompt.Prompt
 import kotlinx.serialization.json.JsonObject
 import java.nio.file.Path
+import kotlin.reflect.KClass
 
 /**
  * The result a `tool_call` interceptor returns for one tool invocation.
@@ -53,6 +54,32 @@ class ProviderRequestHook(val fn: (Prompt) -> Prompt)
 class SessionStartHook(val fn: (root: Path) -> Unit)
 
 /**
+ * A holder for an extension's typed config, filled by the loader from the merged manifest
+ * *after* the script compiles and *before* the first turn. Read it via [invoke] inside a hook;
+ * reading it in the `extension { }` body (before the fill) is an error.
+ */
+class ConfigHandle<T : Any> {
+    private var value: T? = null
+    internal fun fill(v: T) { value = v }
+    operator fun invoke(): T = value
+        ?: error("extension config read before it was filled — read config only inside hooks")
+}
+
+/**
+ * A request to bind a manifest subtree into an extension's config [type]. [section] `null` binds
+ * the whole manifest root (the class names the top-level sections it wants); a name binds just
+ * that subtree. The loader deserializes and calls [fill].
+ */
+class ConfigRequest @PublishedApi internal constructor(
+    val type: KClass<*>,
+    val section: String?,
+    private val handle: ConfigHandle<*>,
+) {
+    @Suppress("UNCHECKED_CAST")
+    fun fill(value: Any) { (handle as ConfigHandle<Any>).fill(value) }
+}
+
+/**
  * What a `.ki.kts` extension script produces: any mix of tools and lifecycle hooks. A
  * script that ends in a bare `tool("x") { ... }` is lifted into a single-tool, zero-hook
  * extension (see [dev.ki.agent.tools.ScriptToolLoader.loadExtension]), so every existing
@@ -64,6 +91,8 @@ class Extension(
     val toolResultHooks: List<ToolResultHook> = emptyList(),
     val providerRequestHooks: List<ProviderRequestHook> = emptyList(),
     val sessionStartHooks: List<SessionStartHook> = emptyList(),
+    /** Typed config the loader must fill from the merged manifest before the first turn. */
+    val configRequests: List<ConfigRequest> = emptyList(),
 )
 
 /** DSL builder used inside a `.ki.kts` extension script (the `extension { ... }` block). */
@@ -73,10 +102,23 @@ class ExtensionBuilder {
     private val toolResultHooks = mutableListOf<ToolResultHook>()
     private val providerRequestHooks = mutableListOf<ProviderRequestHook>()
     private val sessionStartHooks = mutableListOf<SessionStartHook>()
+    @PublishedApi internal val configRequests = mutableListOf<ConfigRequest>()
 
     /** Register a tool, same DSL as a standalone tool script. */
     fun tool(name: String, configure: ToolBuilder.() -> Unit) {
         tools += dev.ki.agent.tools.tool(name, configure)
+    }
+
+    /**
+     * Declare a typed config the agent fills from the merged manifest. [section] `null` (default)
+     * binds the whole manifest root — the config class [T] names the top-level sections it wants
+     * (`bash`, `files`, …) and the rest is ignored; a name binds just that subtree. Read the
+     * returned handle via `handle()` **inside a hook** (it is filled after the script compiles).
+     */
+    inline fun <reified T : Any> config(section: String? = null): ConfigHandle<T> {
+        val handle = ConfigHandle<T>()
+        configRequests += ConfigRequest(T::class, section, handle)
+        return handle
     }
 
     /** Intercept calls to [toolNames] (none/`"*"` = all): permit, block, or modify args. */
@@ -99,8 +141,8 @@ class ExtensionBuilder {
         sessionStartHooks += SessionStartHook(block)
     }
 
-    internal fun build(): Extension =
-        Extension(tools, toolCallHooks, toolResultHooks, providerRequestHooks, sessionStartHooks)
+    fun build(): Extension =
+        Extension(tools, toolCallHooks, toolResultHooks, providerRequestHooks, sessionStartHooks, configRequests)
 }
 
 /** Entry point an extension script calls as its final expression. */

@@ -1,5 +1,12 @@
 package dev.ki.cli.config
 
+import ai.koog.agents.core.tools.Tool
+import dev.ki.agent.config.ManifestException
+import dev.ki.agent.hooks.ToolBlockedException
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.writeText
@@ -96,6 +103,54 @@ class BootstrapTest {
         dir.resolve("ki.dup.toml").writeText("[llm]\nmodel = \"other\"\n")
         val e = assertFailsWith<ManifestException> { Bootstrap.build(CliArgs(configPath = cfg), "SYS") }
         assertTrue(e.message!!.contains("llm.model"), e.message)
+    }
+
+    @Test fun `an extension's config is filled from the manifest and enforced on the wrapped tool`() {
+        // Drives the real Bootstrap wiring: load extension -> fill config<GuardConfig>() from the
+        // merged tree -> wrap the bash tool. Then execute a disallowed command through the wrapped
+        // tool (production path) and assert the block. A blocked call never runs the delegate, so
+        // real bash never fires.
+        val dir = Files.createTempDirectory("ki-boot-extcfg")
+        dir.resolve("guards.ki.kts").writeText(
+            """
+            data class BashRules(val unrestricted: Boolean = false, val commands: Map<String, Any?> = emptyMap())
+            data class GuardConfig(val bash: BashRules = BashRules())
+            extension {
+                val cfg = config<GuardConfig>()
+                onToolCall("bash") { _, args ->
+                    val name = args.string("command").trim().substringBefore(' ')
+                    val bash = cfg().bash
+                    if (!bash.unrestricted && name !in bash.commands.keys)
+                        InterceptionResult.Block("blocked: " + name)
+                    else InterceptionResult.Permit
+                }
+            }
+            """.trimIndent()
+        )
+        val cfg = dir.resolve("ki.toml")
+        cfg.writeText(
+            """
+            [llm]
+            base_url = "http://localhost:4000"
+            api_key_env = "LITELLM_API_KEY"
+            model = "gpt-4o"
+            [tools.bash]
+            [bash]
+            unrestricted = false
+              [bash.commands.git]
+            [extensions.guards]
+            script = "guards.ki.kts"
+            """.trimIndent()
+        )
+
+        val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
+        session.store.use {
+            @Suppress("UNCHECKED_CAST")
+            val bash = session.tools.first { it.descriptor.name == "bash" } as Tool<JsonObject, String>
+            assertFailsWith<ToolBlockedException> {
+                runBlocking { bash.execute(buildJsonObject { put("command", "rm -rf /") }) }
+            }
+        }
     }
 
     @Test fun `--continue resumes the most recent session`() {

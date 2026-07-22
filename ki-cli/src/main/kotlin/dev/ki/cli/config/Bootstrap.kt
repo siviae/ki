@@ -2,6 +2,10 @@ package dev.ki.cli.config
 
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.snapshot.providers.PersistenceStorageProvider
+import com.fasterxml.jackson.databind.node.ObjectNode
+import dev.ki.agent.config.Manifest
+import dev.ki.agent.config.ManifestException
+import dev.ki.agent.config.ModelEntry
 import dev.ki.agent.context.UsageAccumulator
 import dev.ki.agent.hooks.InterceptorChain
 import dev.ki.agent.tools.Extension
@@ -49,7 +53,8 @@ class KiSession(
 object Bootstrap {
     fun build(args: CliArgs, baseSystemPrompt: String): KiSession {
         val root: Path = args.configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath()
-        val manifest = Manifest.load(resolveConfigPaths(args, root))
+        val loaded = ManifestLoader.load(resolveConfigPaths(args, root))
+        val manifest = loaded.manifest
 
         val config = resolveConfig(args, manifest)
         val llm = KiLlm(config)
@@ -58,7 +63,7 @@ object Bootstrap {
         // (builtins, script tools, and extension-contributed tools alike). The executor is
         // wrapped later, per agent build (KiController), so a `/model` rebuild keeps its hooks.
         val loader = ScriptToolLoader()
-        val extensions = buildExtensions(manifest, root, loader)
+        val extensions = buildExtensions(manifest, root, loader, loaded.tree)
         val interceptors = InterceptorChain(extensions)
         val extensionTools = extensions.flatMap { it.tools }.map { ScriptTool(it) }
         val tools = (buildTools(manifest, root, loader) + extensionTools).map { interceptors.wrap(it) }
@@ -143,8 +148,19 @@ object Bootstrap {
         }
     }
 
-    /** Load each `[extensions.<name>]` script (always a `script` path) into an [Extension]. */
-    private fun buildExtensions(manifest: Manifest, root: Path, loader: ScriptToolLoader): List<Extension> {
+    /**
+     * Load each `[extensions.<name>]` script (always a `script` path) into an [Extension], then
+     * fill its registered config from the merged manifest [tree]: `section == null` binds the
+     * whole root (the config class cherry-picks sections), a name binds that subtree. Jackson
+     * deserializes the script-defined config class by reflection — the merged config is already
+     * in memory, so no file is re-read.
+     */
+    private fun buildExtensions(
+        manifest: Manifest,
+        root: Path,
+        loader: ScriptToolLoader,
+        tree: ObjectNode,
+    ): List<Extension> {
         if (manifest.extensions.isEmpty()) return emptyList()
         return manifest.extensions.map { (name, entry) ->
             val script = entry.script
@@ -153,7 +169,19 @@ object Bootstrap {
             if (!file.exists()) throw ManifestException(
                 "Extension '$name' points to a missing script: $file"
             )
-            loader.loadExtension(file)
+            val extension = loader.loadExtension(file)
+            for (req in extension.configRequests) {
+                val node = if (req.section == null) tree else tree.get(req.section)
+                try {
+                    req.fill(ManifestLoader.decode(node, req.type.java))
+                } catch (e: Exception) {
+                    val where = req.section?.let { "[$it]" } ?: "manifest root"
+                    throw ManifestException(
+                        "Extension '$name' config ${req.type.simpleName} could not be read from $where: ${e.message}", e
+                    )
+                }
+            }
+            extension
         }
     }
 

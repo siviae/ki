@@ -2,7 +2,7 @@ package dev.ki.cli
 
 import dev.ki.cli.config.Bootstrap
 import dev.ki.cli.config.CliArgs
-import dev.ki.cli.config.ManifestException
+import dev.ki.agent.config.ManifestException
 import dev.ki.cli.ui.KiScreen
 import dev.ki.tui.ProcessTerminal
 import dev.ki.tui.Tui

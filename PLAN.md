@@ -72,6 +72,7 @@ deliverables, the modules touched, and acceptance criteria you can check against
 | `multifile-config` | M17 | Multi-file manifest config (no-override merge) | ✅ Done (commit `ce8bbd7`) |
 | `extension-hooks` | M18 | Extension hooks (tool_call / tool_result / provider_request interceptors) | ◐ Hook surface shipped (block/modify/result/provider, koog-dispatch verified); porting pi's bash-guard/rules/env-mask is the follow-up |
 | `module-consolidation` | — | Merge `ki-ai` into `ki-agent`; rename `ki-cluster` → `ki-spring` | ✅ Done |
+| `extension-config` | — | Typed config model in ki-agent; extensions register their own config type, filled from the merged manifest | ✅ Done |
 
 New milestones from here get a **slug only** — no new M-number is minted (the number column
 stops at M18). M8+ are the **most-reasonable reorganization of every deferred/backlog item** carried
@@ -1621,6 +1622,124 @@ Spring/Postgres reference impl, so its name should say so.
 stable identities (the same reasoning as keeping frozen `M`-numbers). Historical milestone
 bodies above still reference `ki-ai` / `ki-cluster` by their then-current names; the module
 list at the top of this file is the current source of truth.
+
+---
+
+## extension-config — typed config model in ki-agent; extensions register their own config
+
+*Slug: `extension-config` · no M-number · depends-on: [`extension-hooks`] (shipped),
+`multifile-config` (shipped — the merge tree it reuses). Status: ✅ shipped.*
+
+**Goal:** let an extension read the parsed manifest as its own **typed** config, filled by the
+agent from the already-merged TOML — no re-parse, no nested-`Map` casting, no `[extensions.<name>]`
+re-declaration. Solves the problem that `loadExtension` compiles a `.ki.kts` with no runtime
+config context, so an extension that needs (say) a bash allow-list would otherwise re-read and
+re-parse `ki.toml` itself.
+
+**Context (why this shape).** Investigated the real pi hats in `knowledge-base/.pi/hats/*`
+(`dev`, `plan`, `debik`, …). A pi *hat* is essentially a ki *manifest*: `[llm].model`,
+`[context].files`, `[tools.<name>]` map 1:1; the hat's `[pi.bash]`/`[pi.files]` allow-lists are
+the config the `bash-guard` / `rules` interceptors consume. So "role" is **not** a missing ki
+concept — a manifest already *is* one hat; there is no `[agent].role`, and the example's
+`.pi/hats/<role>/ki.toml` re-read is exactly the re-parse to avoid. In ki these policy sections
+are renamed ki-native **`[bash]` / `[files]`** (decision: rename, not keep the `pi.` prefix).
+
+**Rejected alternatives** (see the conversation trail): a raw `Map<String, Any?>` context
+(casting hell on deep nesting); a `ConfigView` dotted-path accessor (better, but stringly);
+`providedProperties("context" to …)` binding a blob (still untyped, and the value can't be
+built before the script is compiled since the *type* is script-defined); a separate shared
+config Gradle module (unneeded — ki-agent already is the shared layer under ki-cli).
+
+**Chosen design:** the config **model** is pure-Kotlin and lives in **ki-agent**; **all Jackson**
+(parse, merge, `treeToValue`) stays in **ki-cli**. An extension registers a config *type*; the
+ki-cli loader deserializes the merged tree into it and fills a handle the hooks read.
+
+**Modules:** ki-agent (config model + `config<T>` DSL + handle types), ki-cli (loader split +
+fill step). No new module; no Jackson in ki-agent.
+
+**Deliverables**
+- **Config model → ki-agent, Jackson-free.** Move the data classes (`Manifest`, `LlmSection`,
+  `DbSection`, `ContextSection`, `ToolEntry`, `ModelEntry`, `ManifestException`) from
+  `dev.ki.cli.config` to `dev.ki.agent.config` as plain Kotlin. Drop `ToolEntry`'s
+  `@JsonAnySetter` (a Jackson annotation) — the loader fills `settings` from the subtree by hand.
+- **Loader split → ki-cli keeps Jackson.** The current `Manifest.load` / `mergeInto` /
+  `firstFile` (TomlMapper, deep-union merge, duplicate-key errors) become
+  `dev.ki.cli.config.ManifestLoader`, producing ki-agent's `Manifest` and **retaining the merged
+  `ObjectNode`** (built anyway during the `multifile-config` merge) for the fill step below.
+- **Extension config registration (ki-agent).**
+  - `ConfigHandle<T>` — a mutable holder; `operator fun invoke(): T` returns the filled value,
+    or errors if read before fill ("read config only inside hooks").
+  - `ConfigRequest(type: KClass<*>, section: String?, handle)` — carried on `Extension`.
+  - `ExtensionBuilder.config<T>(section: String? = null): ConfigHandle<T>` (reified, records a
+    request). **Default `section = null` binds the whole manifest root**; the config class names
+    the top-level sections it wants (`bash`, `files`, …) and Jackson ignores the rest. An
+    explicit `section` binds just that subtree (e.g. `config<BashRules>("bash")`).
+- **Fill step (ki-cli loader).** After `loadExtension` returns an `Extension`, for each
+  `ConfigRequest`: pick `root` (section null) or `root.get(section)` (or an empty node if
+  absent), `mapper.treeToValue(node, req.type.java)`, `req.fill(value)`. Jackson deserializes the
+  **script-defined** class by reflection; timing is post-compile / pre-first-turn, so `cfg()` in
+  a hook is always filled. Reading config in the `extension { }` body (pre-fill) is unsupported.
+- **`[bash]` / `[files]` are extension-owned**, not global typed sections — the `bash-guard`
+  extension declares their shape (`GuardConfig`) bound to root. The global typed model stays ki
+  core (`llm`/`db`/`context`/`tools`/`extensions`/`models`); `[agent].systemPrompt` and
+  `[pi].skills` remain separate future work (their own milestones).
+- **Unit tests:** root-bound config assembles from two top-level sections; subtree-bound config
+  (`section = "bash"`); a missing section yields data-class defaults; `cfg()` before fill errors;
+  the fill deserializes a script-compiled data class (the reflection risk — verify early); a
+  single-`ki.toml` project with no extension config still loads unchanged.
+
+**Acceptance**
+- A `guards.ki.kts` that declares `data class GuardConfig(bash, files)` and calls
+  `config<GuardConfig>()` reads `[bash]`/`[files]` from the merged manifest with **no re-parse
+  and no `Map` casting**; an `onToolCall("bash")` hook blocks a command absent from
+  `bash.commands`.
+- Moving the model to ki-agent leaves ki-cli building and all existing manifest tests green
+  (imports updated `dev.ki.cli.config` → `dev.ki.agent.config`); ki-agent gains **no** Jackson
+  dependency.
+
+**Reference — end-to-end (root binding):**
+```kotlin
+// guards.ki.kts
+data class BashRules(val unrestricted: Boolean = false, val commands: Map<String, Any?> = emptyMap())
+data class FileRules(val edit: List<String> = emptyList(), val read: List<String> = emptyList())
+data class GuardConfig(val bash: BashRules = BashRules(), val files: FileRules = FileRules())
+
+extension {
+    val cfg = config<GuardConfig>()                 // section = null → whole manifest root
+    onToolCall("bash") { _, args ->
+        val c = cfg().bash
+        val name = args.string("cmd").trim().substringBefore(' ')
+        if (!c.unrestricted && name !in c.commands.keys)
+            InterceptionResult.Block("bash: '$name' not allowed") else InterceptionResult.Permit
+    }
+}
+```
+```toml
+[bash]
+unrestricted = false
+  [bash.commands.git]
+  [bash.commands.ls]
+[files]
+edit = ["**/todos/**"]
+[extensions.guards]
+script = "tools/guards.ki.kts"
+```
+
+Config classes inherit the manifest mapper's **`SNAKE_CASE`** strategy, so a field `maxDepth`
+reads TOML key `max_depth`. A required field whose key is absent fails `Bootstrap.build` fast,
+wrapped as a `ManifestException` naming the extension.
+
+**Shipped as designed.** Model relocated to `dev.ki.agent.config` (Jackson-free);
+`dev.ki.cli.config.ManifestLoader` owns all Jackson and retains the merged tree; `config<T>()` /
+`ConfigHandle` / `ConfigRequest` in the extension DSL; ki-cli `Bootstrap` fills each request from
+the tree before the first turn. The load-bearing risk — Jackson `treeToValue` into a
+*script-compiled* data class — is verified green (`ExtensionConfigTest`), and the real Bootstrap
+wiring is covered end-to-end (`BootstrapTest`: a `[bash]` allowlist blocks a disallowed command
+through the wrapped tool). Scripts now compile at **JVM target 21** (was defaulting to 1.8, which
+rejected the inline `config<T>()` DSL) — `ScriptToolLoader` `CACHE_VERSION` bumped to `v2`.
+
+**Notes:** supersedes the earlier `ExtensionContext` / `providedProperties` sketch entirely —
+config now arrives via the typed handle; `root` still arrives via `onSessionStart(root)`.
 
 ---
 

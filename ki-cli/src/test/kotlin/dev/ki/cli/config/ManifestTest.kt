@@ -1,6 +1,9 @@
 package dev.ki.cli.config
 
+import dev.ki.agent.config.Manifest
+import dev.ki.agent.config.ManifestException
 import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -9,6 +12,11 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ManifestTest {
+    // The model moved to ki-agent; parsing lives in ManifestLoader. These shims keep the
+    // tests focused on the parsed [Manifest] (the merged tree is exercised via extension-config).
+    private fun load(path: Path): Manifest = ManifestLoader.load(path).manifest
+    private fun load(paths: List<Path>): Manifest = ManifestLoader.load(paths).manifest
+
     private fun manifest(toml: String) = Files.createTempDirectory("ki-mf").resolve("ki.toml")
         .also { it.writeText(toml) }
 
@@ -34,7 +42,7 @@ class ManifestTest {
     """.trimIndent()
 
     @Test fun `parses llm db and models sections`() {
-        val m = Manifest.load(manifest(sample))
+        val m = load(manifest(sample))
         assertEquals("http://proxy:4000", m.llm.baseUrl)
         assertEquals("MY_KEY", m.llm.apiKeyEnv)
         assertEquals("fast", m.llm.model)
@@ -44,7 +52,7 @@ class ManifestTest {
     }
 
     @Test fun `builtin entry has no script and tool config lands in settings`() {
-        val m = Manifest.load(manifest(sample))
+        val m = load(manifest(sample))
         assertNull(m.tools["bash"]?.script)
         val jira = m.tools["jira"]!!
         assertEquals("tools/jira.ki.kts", jira.script)
@@ -53,7 +61,7 @@ class ManifestTest {
     }
 
     @Test fun `parses extensions section as script entries with settings`() {
-        val m = Manifest.load(
+        val m = load(
             manifest(
                 """
                 [llm]
@@ -74,7 +82,7 @@ class ManifestTest {
 
     @Test fun `missing manifest is a clear error`() {
         val e = assertFailsWith<ManifestException> {
-            Manifest.load(Files.createTempDirectory("ki-none").resolve("ki.toml"))
+            load(Files.createTempDirectory("ki-none").resolve("ki.toml"))
         }
         assertTrue(e.message!!.contains("No ki.toml"), e.message)
     }
@@ -98,7 +106,7 @@ class ManifestTest {
             [models.fast]
             id = "gpt-4o-mini"
         """)
-        val m = Manifest.load(listOf(a, b))
+        val m = load(listOf(a, b))
         assertEquals("http://proxy:4000", m.llm.baseUrl)
         assertTrue(m.tools.containsKey("bash"))
         assertEquals("gpt-4o-mini", m.models["fast"]?.id)
@@ -118,7 +126,7 @@ class ManifestTest {
             [tools.jira]
             script = "tools/jira.ki.kts"
         """)
-        val m = Manifest.load(listOf(a, b))
+        val m = load(listOf(a, b))
         assertTrue(m.tools.containsKey("bash"))
         assertEquals("tools/jira.ki.kts", m.tools["jira"]?.script)
     }
@@ -135,7 +143,7 @@ class ManifestTest {
             [llm]
             model = "slow"
         """)
-        val e = assertFailsWith<ManifestException> { Manifest.load(listOf(a, b)) }
+        val e = assertFailsWith<ManifestException> { load(listOf(a, b)) }
         assertTrue(e.message!!.contains("llm.model"), e.message)
         assertTrue(e.message!!.contains("ki.toml"), e.message)
         assertTrue(e.message!!.contains("ki.dup.toml"), e.message)
@@ -156,7 +164,7 @@ class ManifestTest {
             [context]
             files = ["b.md"]
         """)
-        val e = assertFailsWith<ManifestException> { Manifest.load(listOf(a, b)) }
+        val e = assertFailsWith<ManifestException> { load(listOf(a, b)) }
         assertTrue(e.message!!.contains("context.files"), e.message)
     }
 }
