@@ -13,6 +13,7 @@ package dev.ki.agent.config
 data class Manifest(
     val llm: LlmSection,
     val db: DbSection = DbSection(),
+    val jvm: JvmSection = JvmSection(),
     val context: ContextSection = ContextSection(),
     /** Hat-only: `[agent].systemPrompt` — the hat's base system prompt (before context files). */
     val agent: AgentSection = AgentSection(),
@@ -36,6 +37,15 @@ data class LlmSection(
     /** Sampling temperature override (0.0–2.0); null = provider default. */
     val temperature: Double? = null,
 )
+
+/**
+ * `[jvm]` — runtime knobs for the CLI process itself. [classpath] entries are
+ * jars or directories (a trailing slash-star globs every jar in the directory)
+ * appended to the script classpath: standalone ki-cli needs the host project's
+ * tool libs (shifts-db, xlsx, memory, …) for its `.ki.kts` scripts; embedded
+ * hosts already have them.
+ */
+data class JvmSection(val classpath: List<String> = emptyList())
 
 /**
  * The CLI ships a single store: pi-format JSONL files under

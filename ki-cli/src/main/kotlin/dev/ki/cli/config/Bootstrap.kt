@@ -65,6 +65,9 @@ object Bootstrap {
         else
             ManifestLoader.load(resolveConfigPaths(args, root))
         val manifest = loaded.manifest
+        // BEFORE any script compilation: ScriptToolLoader snapshots the context
+        // classloader when the compilation config is built (line ~78 below).
+        applyJvmClasspath(manifest, root, args)
 
         // A hat's [agent].systemPrompt replaces the CLI default as the base prompt;
         // [context].files are appended to it by buildSystemPrompt as before.
@@ -136,6 +139,36 @@ object Bootstrap {
             emptyList() // root missing/unreadable — Manifest.load reports the primary as missing
         }
         return listOf(args.configPath) + siblings
+    }
+
+    /**
+     * Extend the script classpath from `[jvm].classpath`. Entries are resolved against
+     * the manifest root; a trailing slash-star globs every jar in the directory. The
+     * resulting URLClassLoader becomes the thread's contextClassLoader — ScriptToolLoader's
+     * `dependenciesFromCurrentContext(wholeClasspath = true)` then hands the KB tool
+     * libs to compiled `.ki.kts` scripts (and to their runtime class references).
+     * Irreversible by design: the CLI is a single-purpose process.
+     */
+    private fun applyJvmClasspath(manifest: Manifest, root: Path, args: CliArgs) {
+        val entries = manifest.jvm.classpath
+        if (entries.isEmpty()) return
+        val urls = entries.flatMap { spec ->
+            val resolved = root.resolve(spec.removeSuffix("/*")).normalize()
+            if (spec.endsWith("/*")) {
+                Files.newDirectoryStream(resolved, "*.jar").use { stream ->
+                    stream.map { it.toUri().toURL() }.sortedBy { it.toString() }
+                }
+            } else {
+                listOf(resolved.toUri().toURL())
+            }
+        }
+        if (urls.isEmpty()) return
+        val loader = java.net.URLClassLoader(
+            urls.toTypedArray(),
+            Thread.currentThread().contextClassLoader,
+        )
+        Thread.currentThread().contextClassLoader = loader
+        System.err.println("ki: script classpath extended with ${urls.size} entr${if (urls.size == 1) "y" else "ies"} ([jvm].classpath)")
     }
 
     private fun resolveConfig(args: CliArgs, manifest: Manifest, env: (String) -> String? = System::getenv): KiConfig =
