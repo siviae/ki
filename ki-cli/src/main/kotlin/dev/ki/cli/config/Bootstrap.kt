@@ -2,10 +2,12 @@ package dev.ki.cli.config
 
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.snapshot.providers.PersistenceStorageProvider
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import dev.ki.agent.config.Manifest
 import dev.ki.agent.config.ManifestException
 import dev.ki.agent.config.ModelEntry
+import dev.ki.agent.config.ToolEntry
 import dev.ki.agent.context.UsageAccumulator
 import dev.ki.agent.hooks.InterceptorChain
 import dev.ki.agent.tools.Extension
@@ -53,8 +55,18 @@ class KiSession(
 object Bootstrap {
     fun build(args: CliArgs, baseSystemPrompt: String): KiSession {
         val root: Path = args.configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath()
-        val loaded = ManifestLoader.load(resolveConfigPaths(args, root))
+        val hat = args.hat?.let { HatPaths.resolve(root, it) }
+        val loaded = if (hat != null)
+            ManifestLoader.loadHat(args.configPath.toAbsolutePath().normalize(), hat)
+        else
+            ManifestLoader.load(resolveConfigPaths(args, root))
         val manifest = loaded.manifest
+
+        // A hat's [agent].systemPrompt replaces the CLI default as the base prompt;
+        // [context].files are appended to it by buildSystemPrompt as before.
+        val base = manifest.agent.systemPrompt ?: baseSystemPrompt
+
+        val effective = effectiveManifest(manifest, loaded)
 
         val config = resolveConfig(args, manifest)
         val llm = KiLlm(config)
@@ -63,13 +75,13 @@ object Bootstrap {
         // (builtins, script tools, and extension-contributed tools alike). The executor is
         // wrapped later, per agent build (KiController), so a `/model` rebuild keeps its hooks.
         val loader = ScriptToolLoader()
-        val extensions = buildExtensions(manifest, root, loader, loaded.tree)
+        val extensions = buildExtensions(effective, root, loader, loaded.tree)
         val interceptors = InterceptorChain(extensions)
         val extensionTools = extensions.flatMap { it.tools }.map { ScriptTool(it) }
-        val tools = (buildTools(manifest, root, loader) + extensionTools).map { interceptors.wrap(it) }
+        val tools = (buildTools(effective, root, loader) + extensionTools).map { interceptors.wrap(it) }
         interceptors.fireSessionStart(root)
 
-        val systemPrompt = buildSystemPrompt(baseSystemPrompt, manifest, root)
+        val systemPrompt = buildSystemPrompt(base, manifest, root)
 
         val dbPath = root.resolve(args.dbPath ?: manifest.db.path).normalize()
         val store = SqliteSessionStore(dbPath)
@@ -106,27 +118,51 @@ object Bootstrap {
         return listOf(args.configPath) + siblings
     }
 
-    private fun resolveConfig(args: CliArgs, manifest: Manifest): KiConfig {
-        // Model: CLI flag overrides manifest; a name matching a catalog alias resolves to its id.
-        val requested = args.model ?: manifest.llm.model
+    private fun resolveConfig(args: CliArgs, manifest: Manifest, env: (String) -> String? = System::getenv): KiConfig =
+        resolveConfigParts(args, manifest, env).let { r ->
+            val defaults = KiConfig(r.baseUrl, r.apiKey, r.modelId)
+            KiConfig(
+                baseUrl = r.baseUrl,
+                apiKey = r.apiKey,
+                defaultModelId = r.modelId,
+                contextWindow = r.entry?.contextWindow ?: defaults.contextWindow,
+                maxOutputTokens = r.entry?.maxOutputTokens ?: defaults.maxOutputTokens,
+            )
+        }
+
+    /**
+     * The env/manifest resolution shared by [resolveConfig] and [resolveForPrint]:
+     * model = CLI flag > `KI_MODEL` env > manifest (a catalog alias resolves to its id);
+     * base URL = `LITELLM_BASE_URL` env > manifest; API key = the manifest-declared env var,
+     * then the generic `LITELLM_API_KEY` fallback (README: "if the proxy requires a key").
+     * [env] is injectable for tests. [ResolvedModel.entry] is the catalog entry found under
+     * the ALIAS (its contextWindow/maxOutputTokens feed the M6 context budget).
+     */
+    internal data class ResolvedModel(
+        val modelId: String,
+        val apiKey: String,
+        val baseUrl: String,
+        val entry: ModelEntry?,
+    )
+
+    internal fun resolveConfigParts(
+        args: CliArgs,
+        manifest: Manifest,
+        env: (String) -> String?,
+    ): ResolvedModel {
+        val requested = args.model
+            ?: env("KI_MODEL")?.takeIf { it.isNotBlank() }
+            ?: manifest.llm.model
         val entry = manifest.models[requested]
         val modelId = entry?.id ?: requested
 
-        val apiKey = System.getenv(manifest.llm.apiKeyEnv)
+        val apiKey = env(manifest.llm.apiKeyEnv)
+            ?: env("LITELLM_API_KEY")?.takeIf { it.isNotBlank() }
             ?: error("Environment variable '${manifest.llm.apiKeyEnv}' (set in [llm].api_key_env) is not set")
 
-        val baseUrl = manifest.llm.baseUrl
-
-        // Catalog metadata (context window / max output) drives M6's context budget;
-        // fall back to KiConfig's defaults when the model isn't catalogued.
-        val defaults = KiConfig(baseUrl, apiKey, modelId)
-        return KiConfig(
-            baseUrl = baseUrl,
-            apiKey = apiKey,
-            defaultModelId = modelId,
-            contextWindow = entry?.contextWindow ?: defaults.contextWindow,
-            maxOutputTokens = entry?.maxOutputTokens ?: defaults.maxOutputTokens,
-        )
+        val baseUrl = env("LITELLM_BASE_URL")?.takeIf { it.isNotBlank() }
+            ?: manifest.llm.baseUrl
+        return ResolvedModel(modelId, apiKey, baseUrl, entry)
     }
 
     private fun buildTools(manifest: Manifest, root: Path, loader: ScriptToolLoader): List<ToolBase<*, *>> {
@@ -200,5 +236,76 @@ object Bootstrap {
         args.resume != null -> args.resume
         args.continueLatest -> store.listSessions().firstOrNull()?.conversationId ?: UUID.randomUUID().toString()
         else -> UUID.randomUUID().toString()
+    }
+
+    /**
+     * Resolve the configuration the way [build] would (hat merge, env precedence, hat tool
+     * filtering) and return it as a JSON node — no LLM key required, no tools built. Used by
+     * `--print-resolved` and by the config-parity harness (ki vs pi's hats.ts).
+     */
+    fun resolveForPrint(args: CliArgs, env: (String) -> String? = System::getenv): ObjectNode {
+        val root: Path = args.configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath()
+        val hat = args.hat?.let { HatPaths.resolve(root, it) }
+        val loaded = if (hat != null)
+            ManifestLoader.loadHat(args.configPath.toAbsolutePath().normalize(), hat)
+        else
+            ManifestLoader.load(resolveConfigPaths(args, root))
+        val manifest = loaded.manifest
+        val effective = effectiveManifest(manifest, loaded)
+
+        val resolved = resolveConfigParts(args, manifest, env)
+        val skills = loaded.piSection?.get("skills")?.map { it.asText() } ?: emptyList()
+
+        return ManifestLoader.mapper.createObjectNode().apply {
+            put("hat", args.hat)
+            put("model", resolved.modelId)
+            put("baseUrl", resolved.baseUrl)
+            put("apiKeyEnv", manifest.llm.apiKeyEnv)
+            put("apiKeySet", env(manifest.llm.apiKeyEnv) != null ||
+                !env("LITELLM_API_KEY").isNullOrBlank())
+            put("dbPath", manifest.db.path)
+            put("systemPrompt", manifest.agent.systemPrompt)
+            put("hatDescription", loaded.piSection?.get("hatDescription")?.asText())
+            set<JsonNode>("contextFiles", ManifestLoader.mapper.valueToTree(manifest.context.files))
+            // declaration order (pi preserves it; the parity harness diffs exact arrays)
+            set<JsonNode>("toolNames", ManifestLoader.mapper.valueToTree(effective.tools.keys.toList()))
+            set<JsonNode>("extensionNames", ManifestLoader.mapper.valueToTree(effective.extensions.keys.toList()))
+            set<JsonNode>("skills", ManifestLoader.mapper.valueToTree(skills))
+        }
+    }
+
+    /**
+     * pi semantics: with a hat active, the hat's `[tools.*]` list IS the allowlist — root
+     * entries are the no-hat baseline, not a union partner. Hat extensions likewise replace
+     * the list (both repos keep the union at the extension-config level).
+     */
+    private fun effectiveManifest(manifest: Manifest, loaded: LoadedManifest): Manifest =
+        if (loaded.hatToolNames != null) manifest.copy(
+            tools = filterToHatTools(manifest.tools, loaded.hatToolNames),
+            extensions = if (loaded.hatExtensionNames != null)
+                manifest.extensions.filterKeys { it in loaded.hatExtensionNames }
+            else manifest.extensions,
+        ) else manifest
+
+    /** Filter the merged tool map down to the hat's list, ordered by the hat's declaration
+     *  order (pi preserves it, and the parity harness diffs exact arrays). Script/builtin
+     *  validation stays in [buildTools] — a hat entry without a `script` surfaces there. */
+    private fun filterToHatTools(
+        tools: Map<String, ToolEntry>,
+        hatToolNames: List<String>,
+    ): Map<String, ToolEntry> {
+        val ordered = LinkedHashMap<String, ToolEntry>()
+        for (name in hatToolNames) tools[name]?.let { ordered[name] = it }
+        return ordered
+    }
+}
+
+/** Location of a named hat's manifest inside the project root. */
+object HatPaths {
+    fun resolve(root: Path, name: String): Path {
+        if (name.contains('/') || name.contains("\\") || name == "..") throw ManifestException(
+            "Invalid hat name '$name'."
+        )
+        return root.resolve(".pi").resolve("hats").resolve(name).resolve("ki.toml").normalize()
     }
 }

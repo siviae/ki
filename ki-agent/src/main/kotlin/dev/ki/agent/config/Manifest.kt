@@ -14,6 +14,8 @@ data class Manifest(
     val llm: LlmSection,
     val db: DbSection = DbSection(),
     val context: ContextSection = ContextSection(),
+    /** Hat-only: `[agent].systemPrompt` — the hat's base system prompt (before context files). */
+    val agent: AgentSection = AgentSection(),
     /** Tool name → entry. Builtins (see `BuiltinTools.NAMES`) need no `script`. */
     val tools: Map<String, ToolEntry> = emptyMap(),
     /**
@@ -41,6 +43,9 @@ data class LlmSection(
 data class DbSection(val path: String = "./.ki/ki.db", val checkpoints: Boolean = false)
 
 data class ContextSection(val files: List<String> = emptyList())
+
+/** `[agent]` — only used by hat manifests; a plain project manifest omits it. */
+data class AgentSection(val systemPrompt: String? = null)
 
 data class ModelEntry(
     val id: String,

@@ -23,6 +23,14 @@ data class CliArgs(
     val continueLatest: Boolean = false,
     /** One-shot prompt; when null the CLI runs interactively. */
     val prompt: String? = null,
+    /**
+     * Activate a named hat: load `.pi/hats/<name>/ki.toml` over the project manifest with
+     * hat-wins resolution (pi semantics — see [ManifestLoader.loadHat]). The hat's
+     * `[agent].systemPrompt`, when present, becomes the base system prompt.
+     */
+    val hat: String? = null,
+    /** Print the resolved configuration as JSON to stdout and exit (parity/debug aid). */
+    val printResolved: Boolean = false,
     /** INFO-level logging to `.ki/logs/`. */
     val verbose: Boolean = false,
     /** DEBUG-level logging to `.ki/logs/`. */
@@ -53,6 +61,8 @@ data class CliArgs(
                     "--continue" -> args = args.copy(continueLatest = true)
                     "--verbose", "-v" -> args = args.copy(verbose = true)
                     "--debug" -> args = args.copy(debug = true)
+                    "--hat" -> args = args.copy(hat = next(a))
+                    "--print-resolved" -> args = args.copy(printResolved = true)
                     else -> rest.add(a)
                 }
                 i++

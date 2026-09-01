@@ -18,6 +18,14 @@ private val SYSTEM_PROMPT = """
 
 fun main(argv: Array<String>) {
     val args = CliArgs.parse(argv)
+
+    // Machine-readable output — must stay clean of logging noise, so it runs before the
+    // first logger acquisition (the kotlin-logging init banner writes to stdout).
+    if (args.printResolved) {
+        println(Bootstrap.resolveForPrint(args).toPrettyString())
+        return
+    }
+
     // Must precede the first logger acquisition so logback resolves level + dir from
     // these properties on init. Acquiring the logger below (not at top level) is what
     // guarantees that ordering — a file-level `val logger` would initialize logback in
