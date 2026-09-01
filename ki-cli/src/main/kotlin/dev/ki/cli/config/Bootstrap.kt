@@ -9,6 +9,7 @@ import dev.ki.agent.config.ManifestException
 import dev.ki.agent.config.ModelEntry
 import dev.ki.agent.config.ToolEntry
 import dev.ki.agent.context.UsageAccumulator
+import dev.ki.agent.skills.Skills
 import dev.ki.agent.hooks.InterceptorChain
 import dev.ki.agent.tools.Extension
 import dev.ki.agent.tools.ScriptTool
@@ -54,7 +55,7 @@ class KiSession(
  */
 object Bootstrap {
     fun build(args: CliArgs, baseSystemPrompt: String): KiSession {
-        val root: Path = args.configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath()
+        val root: Path = (args.configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath()).normalize()
         val hat = args.hat?.let { HatPaths.resolve(root, it) }
         val loaded = if (hat != null)
             ManifestLoader.loadHat(args.configPath.toAbsolutePath().normalize(), hat)
@@ -81,7 +82,12 @@ object Bootstrap {
         val tools = (buildTools(effective, root, loader) + extensionTools).map { interceptors.wrap(it) }
         interceptors.fireSessionStart(root)
 
-        val systemPrompt = buildSystemPrompt(base, manifest, root)
+        val skillsBlock = if (loaded.piSection != null) {
+            val names = loaded.piSection.get("skills")?.map { it.asText() } ?: emptyList()
+            val paths = names.map { root.resolve(".pi/all-skills").resolve(it) }.filter { Files.exists(it) }
+            Skills.formatForPrompt(Skills.load(paths))
+        } else ""
+        val systemPrompt = buildSystemPrompt(base, manifest, root, skillsBlock)
 
         val dbPath = root.resolve(args.dbPath ?: manifest.db.path).normalize()
         val store = SqliteSessionStore(dbPath)
@@ -221,15 +227,22 @@ object Bootstrap {
         }
     }
 
-    private fun buildSystemPrompt(base: String, manifest: Manifest, root: Path): String {
-        if (manifest.context.files.isEmpty()) return base
-        val sb = StringBuilder(base)
+    /**
+     * pi's hats.ts prompt assembly, byte-compatible: parts = [base prompt, ...include file
+     * contents (trimmed, no headers)], then the skills block — joined with a blank line.
+     * (ki used to prefix each context file with `# <rel>`; the pi-parity milestone M1.2
+     * dropped the headers so bot sessions get the exact same prompt under both runtimes.)
+     */
+    private fun buildSystemPrompt(base: String, manifest: Manifest, root: Path, skillsBlock: String): String {
+        val parts = mutableListOf(base)
         for (rel in manifest.context.files) {
             val file = root.resolve(rel).normalize()
             if (!file.exists()) throw ManifestException("Context file not found: $file")
-            sb.append("\n\n# ").append(rel).append("\n\n").append(file.readText())
+            val text = Files.readString(file).trim()
+            if (text.isNotEmpty()) parts.add(text)
         }
-        return sb.toString()
+        if (skillsBlock.isNotEmpty()) parts.add(skillsBlock)
+        return parts.joinToString("\n\n")
     }
 
     private fun resolveSessionId(args: CliArgs, store: SqliteSessionStore): String = when {
@@ -244,7 +257,7 @@ object Bootstrap {
      * `--print-resolved` and by the config-parity harness (ki vs pi's hats.ts).
      */
     fun resolveForPrint(args: CliArgs, env: (String) -> String? = System::getenv): ObjectNode {
-        val root: Path = args.configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath()
+        val root: Path = (args.configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath()).normalize()
         val hat = args.hat?.let { HatPaths.resolve(root, it) }
         val loaded = if (hat != null)
             ManifestLoader.loadHat(args.configPath.toAbsolutePath().normalize(), hat)
@@ -254,7 +267,12 @@ object Bootstrap {
         val effective = effectiveManifest(manifest, loaded)
 
         val resolved = resolveConfigParts(args, manifest, env)
-        val skills = loaded.piSection?.get("skills")?.map { it.asText() } ?: emptyList()
+        val skillNames = loaded.piSection?.get("skills")?.map { it.asText() } ?: emptyList()
+        val skillPaths = skillNames.map { root.resolve(".pi/all-skills").resolve(it) }.filter { Files.exists(it) }
+        val skillsBlock = Skills.formatForPrompt(Skills.load(skillPaths))
+        val resolvedSystemPrompt = buildSystemPrompt(
+            manifest.agent.systemPrompt ?: "", manifest, root, skillsBlock,
+        )
 
         return ManifestLoader.mapper.createObjectNode().apply {
             put("hat", args.hat)
@@ -270,7 +288,11 @@ object Bootstrap {
             // declaration order (pi preserves it; the parity harness diffs exact arrays)
             set<JsonNode>("toolNames", ManifestLoader.mapper.valueToTree(effective.tools.keys.toList()))
             set<JsonNode>("extensionNames", ManifestLoader.mapper.valueToTree(effective.extensions.keys.toList()))
-            set<JsonNode>("skills", ManifestLoader.mapper.valueToTree(skills))
+            set<JsonNode>("skills", ManifestLoader.mapper.valueToTree(skillNames))
+            // fully assembled prompt (base + context files + skills block) — the byte-parity
+            // harness target for M1.2; null without a hat (the CLI default base is passed in,
+            // not known to the print view)
+            put("resolvedSystemPrompt", if (manifest.agent.systemPrompt == null) null else resolvedSystemPrompt)
         }
     }
 
