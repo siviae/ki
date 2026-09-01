@@ -28,6 +28,9 @@ enum class ParamType { STRING, INTEGER, BOOLEAN, FLOAT }
 
 /** Thin typed view over the decoded tool-call arguments passed to a script. */
 class ToolArgs(private val json: JsonObject) {
+    /** Raw args as JSON — for tools that forward the whole input (e.g. atlassian CLI passthrough). */
+    fun rawJson(): JsonObject = json
+
     fun string(name: String): String =
         (json[name] as? JsonPrimitive)?.content
             ?: error("missing required string arg '$name'")
