@@ -36,6 +36,9 @@ interface RpcAgent {
     /** A tool's description for the tool-meta export (null when unknown). */
     fun toolDescription(name: String): String?
 
+    /** Force history compression on the next turn (pi's `compact` request parity). */
+    fun compactNow()
+
     /**
      * The conversation's current tree-path messages in pi JSON shape — the source for
      * `agent_end.messages` (telemetry reads usage/model/provider/stopReason off the last
@@ -107,6 +110,13 @@ class RpcServer(
                 while (messages.tryReceive().isSuccess) { /* drop queued */ }
                 currentTurn?.cancel()
             }
+            "compact" -> {
+                // pi answers with a CompactionResult synchronously; ki v1 flags the next
+                // turn — the compaction (koog M6) happens at its start and lands in the
+                // session file as a pi compaction entry. Turn-boundary difference only.
+                respond(id, success = true, data = mapOf("pending" to true))
+                agent.compactNow()
+            }
             "stop", "shutdown" -> {
                 respond(id, success = true)
                 exitProcess(0)
@@ -144,7 +154,24 @@ class RpcServer(
             // closed one (kotlinx keeps isEmpty=false for a closed channel even after
             // its buffer is fully consumed).
             if (aborted || messages.isEmpty || messages.isClosedForReceive) {
-                emit(mapOf("type" to "agent_end", "messages" to agent.piPathMessages()))
+                val messages = agent.piPathMessages().toMutableList()
+                if (aborted) {
+                    // pi's abort stores the interrupted (partial) assistant and emits its
+                    // message_end with stopReason "aborted". ki's cancel drops the turn
+                    // before anything is stored, so synthesize an aborted assistant into
+                    // the event payload (session file stays untouched) — telemetry sees
+                    // the same shape on both runtimes. model/provider/usage ride over
+                    // from the last stored assistant (same session, same model).
+                    val lastAssistant: Map<String, Any?> =
+                        messages.lastOrNull { it["role"] == "assistant" } ?: emptyMap()
+                    val abortedAssistant = LinkedHashMap(synthesizedAssistant("", stopReason = "aborted"))
+                    for (key in listOf("model", "provider", "usage")) {
+                        lastAssistant[key]?.let { abortedAssistant[key] = it }
+                    }
+                    messages.add(abortedAssistant)
+                    emit(mapOf("type" to "message_end", "message" to abortedAssistant))
+                }
+                emit(mapOf("type" to "agent_end", "stopReason" to if (aborted) "aborted" else "stop", "messages" to messages))
                 active = false
             }
         }
@@ -195,9 +222,10 @@ class RpcServer(
     }
 
     /** Last-assistant fallback when the store has nothing (e.g. instant failure). */
-    private fun synthesizedAssistant(text: String): Map<String, Any?> = linkedMapOf(
+    private fun synthesizedAssistant(text: String, stopReason: String = "stop"): Map<String, Any?> = linkedMapOf(
         "role" to "assistant",
         "content" to listOf(linkedMapOf("type" to "text", "text" to text)),
+        "stopReason" to stopReason,
         "timestamp" to System.currentTimeMillis(),
     )
 
@@ -205,13 +233,13 @@ class RpcServer(
         output(KiJson.write(event))
     }
 
-    private fun respond(id: Any?, success: Boolean, error: String? = null) {
+    private fun respond(id: Any?, success: Boolean, data: Any? = null, error: String? = null) {
         val response = linkedMapOf<String, Any?>(
             "type" to "response",
             "id" to id,
             "success" to success,
         )
-        if (success) response["data"] = emptyMap<String, Any?>() else response["error"] = error
+        if (success) response["data"] = data ?: emptyMap<String, Any?>() else response["error"] = error
         emit(response)
     }
 

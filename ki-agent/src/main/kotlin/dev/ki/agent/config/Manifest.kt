@@ -33,28 +33,27 @@ data class LlmSection(
     /** Name of the env var holding the API key (secret by reference, never inline). */
     val apiKeyEnv: String,
     val model: String,
+    /** Sampling temperature override (0.0–2.0); null = provider default. */
+    val temperature: Double? = null,
 )
 
 /**
- * [checkpoints] opts into agent-persistence: koog snapshots graph state after each node so a
- * process killed mid-turn resumes from the last node (not just the last completed turn). Off
- * by default — extra write per node; enable for crash-prone runs.
- */
-/**
- * [driver] selects the session-store implementation: `sqlite` (default, embedded
- * `./.ki/ki.db`) or `pi-jsonl` (pi-format JSONL files under
- * `~/.pi/agent/sessions/<--cwd-slug-->/` — cross-resumable with pi; checkpoints unsupported).
+ * The CLI ships a single store: pi-format JSONL files under
+ * `~/.pi/agent/sessions/<--cwd-slug-->/` — cross-resumable with pi. [path] overrides
+ * that session directory (test/CI hook, resolved against the manifest root).
  */
 data class DbSection(
-    val path: String = "./.ki/ki.db",
-    val checkpoints: Boolean = false,
-    val driver: String = "sqlite",
+    val path: String? = null,
 )
 
 data class ContextSection(val files: List<String> = emptyList())
 
 /** `[agent]` — only used by hat manifests; a plain project manifest omits it. */
-data class AgentSection(val systemPrompt: String? = null)
+data class AgentSection(
+    val systemPrompt: String? = null,
+    /** M6 compression keeps this many most-recent messages (embedded hosts shrink it). */
+    val keepLastMessages: Int? = null,
+)
 
 data class ModelEntry(
     val id: String,

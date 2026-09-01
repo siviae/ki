@@ -65,7 +65,7 @@ fun main(argv: Array<String>) {
 
     val controller = KiController(session)
 
-    // The store may or may not be Closeable (SQLite: yes; pi-jsonl: no-op).
+    // The store may or may not be Closeable (embedded hosts: maybe; pi-jsonl: no-op).
     try {
         // One-shot mode: run a single prompt, print the reply, exit.
         session.oneShotPrompt?.let { prompt ->

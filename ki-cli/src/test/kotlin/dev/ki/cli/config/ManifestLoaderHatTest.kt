@@ -26,7 +26,7 @@ class ManifestLoaderHatTest {
         model = "fast"
 
         [db]
-        path = "sess.db"
+        path = "sessions"
 
         [context]
         files = ["ROOT.md"]
@@ -121,7 +121,7 @@ class ManifestLoaderHatTest {
             model = "fast"
 
             [db]
-            path = "sess.db"
+            path = "sessions"
 
             [tools.bash]
 

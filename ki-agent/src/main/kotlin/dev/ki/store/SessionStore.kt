@@ -14,9 +14,9 @@ data class SessionInfo(val conversationId: String, val updatedAt: Long, val mess
  * Storage SPI for chat sessions — the compatibility seam between deployments.
  *
  * The agent owns this contract; each deployment supplies an implementation: the CLI
- * backs it with embedded SQLite (`sqlite-jdbc`, no Spring), a host Spring app backs
- * it with Postgres via `JdbcTemplate`. Implementations deal only in [StoredMessage]
- * and never touch koog.
+ * backs it with pi-format JSONL (`PiJsonlSessionStore`, cross-resumable with pi), a
+ * host Spring app with Postgres via `JdbcTemplate`. Implementations deal only in
+ * [StoredMessage] and never touch koog.
  *
  * [save] replaces the whole conversation: koog's chat-memory feature hands the full
  * message list on every store, so persistence is a wholesale replace, not an append.

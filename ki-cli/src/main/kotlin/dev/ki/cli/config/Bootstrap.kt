@@ -19,8 +19,6 @@ import dev.ki.agent.tools.builtin.BuiltinTools
 import dev.ki.ai.KiConfig
 import dev.ki.ai.KiLlm
 import dev.ki.cli.store.PiJsonlSessionStore
-import dev.ki.cli.store.SqliteCheckpointStore
-import dev.ki.cli.store.SqliteSessionStore
 import dev.ki.store.SessionStore
 import dev.ki.store.StoreChatHistoryProvider
 import dev.ki.store.StoreCheckpointProvider
@@ -47,6 +45,8 @@ class KiSession(
     val models: Map<String, ModelEntry>,
     /** Cumulative token usage, shared across `/model` rebuilds. */
     val usageMeter: UsageAccumulator,
+    /** M6 compression keep-window (manifest `[agent].keep_last_messages`, default 20). */
+    val keepLastMessages: Int,
     /** Extension hooks: wraps tools (done) and the LLM executor (re-applied on `/model`). */
     val interceptors: InterceptorChain,
 )
@@ -92,37 +92,29 @@ object Bootstrap {
         } else ""
         val systemPrompt = buildSystemPrompt(base, manifest, root, skillsBlock)
 
-        val dbPath = root.resolve(args.dbPath ?: manifest.db.path).normalize()
-        val store: SessionStore = if (manifest.db.driver.equals("pi-jsonl", ignoreCase = true)) {
-            if (manifest.db.checkpoints) throw ManifestException(
-                "[db] checkpoints are unsupported with driver = \"pi-jsonl\" (SQLite only)."
-            )
-            // [db].path doubles as an explicit session-dir override (test/CI hook);
-            // otherwise sessions land where pi puts them — shared, cross-resumable storage.
-            val dir = if (args.dbPath != null || manifest.db.path != dev.ki.agent.config.DbSection().path)
-                dbPath
-            else
-                Path.of(System.getProperty("user.home"), ".pi", "agent", "sessions")
-                    .resolve(PiJsonlSessionStore.slugFor(root))
-            val (providerName, apiName) = resolvePiProvider(loaded.tree, config.defaultModelId)
-            PiJsonlSessionStore(dir, root, providerName, apiName)
-        } else {
-            SqliteSessionStore(dbPath)
+        // Single store: pi-format JSONL, cross-resumable with pi. Session dir:
+        // explicit args.dbPath wins (test/CI hook), then [db].path (manifest override),
+        // otherwise sessions land where pi puts them.
+        val (providerName, apiName) = resolvePiProvider(loaded.tree, config.defaultModelId)
+        val dir = when {
+            args.dbPath != null -> Path.of(args.dbPath).normalize()
+            !manifest.db.path.isNullOrBlank() -> root.resolve(manifest.db.path).normalize()
+            else -> Path.of(System.getProperty("user.home"), ".pi", "agent", "sessions")
+                .resolve(PiJsonlSessionStore.slugFor(root))
         }
+        val store: SessionStore =
+            PiJsonlSessionStore(dir, root, providerName, apiName, defaultModel = config.defaultModelId)
         val provider = StoreChatHistoryProvider(store)
         val sessionId = resolveSessionId(args, store)
 
-        // M9: checkpoints share the session store's SQLite connection (see SqliteCheckpointStore).
-        val checkpointProvider = if (manifest.db.checkpoints) {
-            val sqlite = store as? SqliteSessionStore ?: throw ManifestException(
-                "[db] checkpoints are unsupported with driver = \"pi-jsonl\" (SQLite only)."
-            )
-            StoreCheckpointProvider(SqliteCheckpointStore(sqlite.connection))
-        } else null
+        // CLI ships no checkpoint store (pi-jsonl only); embedded hosts may still supply
+        // one via KiSession.checkpointProvider (M9/M10 SPI, see CheckpointStore).
+        val checkpointProvider: PersistenceStorageProvider<*>? = null
 
         return KiSession(
             llm, tools, systemPrompt, store, provider, sessionId, checkpointProvider, args.prompt,
             config = config, models = manifest.models, usageMeter = UsageAccumulator(),
+            keepLastMessages = manifest.agent.keepLastMessages ?: 20,
             interceptors = interceptors,
         )
     }
@@ -155,6 +147,7 @@ object Bootstrap {
                 defaultModelId = r.modelId,
                 contextWindow = r.entry?.contextWindow ?: defaults.contextWindow,
                 maxOutputTokens = r.entry?.maxOutputTokens ?: defaults.maxOutputTokens,
+                temperature = manifest.llm.temperature,
             )
         }
 

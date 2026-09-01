@@ -142,7 +142,7 @@ class KiAgent(
 
     // Regex estimate undercounts real BPE, so bias the trigger up by SAFETY.
     private fun tooBig(prompt: Prompt): Boolean =
-        compressHistory && tokenizer.estimate(prompt) * SAFETY > budgetTokens
+        compressHistory && (forceCompression || tokenizer.estimate(prompt) * SAFETY > budgetTokens)
 
     private fun updateUsage(prompt: Prompt, response: Message.Assistant?) {
         val meta = response?.metaInfo
@@ -150,6 +150,15 @@ class KiAgent(
         lastUsage = if (reported != null) ContextUsage(reported, window, reported = true)
         else ContextUsage(tokenizer.estimate(prompt), window, reported = false)
         usageMeter?.record(meta?.inputTokensCount, meta?.outputTokensCount)
+    }
+
+    /** Set by the ki-rpc `compact` request (pi parity): the next turn compresses first. */
+    @Volatile
+    private var forceCompression = false
+
+    /** Force history compression on the next turn (ki-rpc `compact` request, M1.6 parity). */
+    fun compactNow() {
+        forceCompression = true
     }
 
     private val compressionConfig = HistoryCompressionConfig(
@@ -265,6 +274,7 @@ class KiAgent(
         } finally {
             reasoningSink = null
             toolSink = null
+            forceCompression = false
         }
     }
 

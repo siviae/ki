@@ -87,6 +87,8 @@ class RpcServerTest {
         override fun toolDescription(name: String): String? =
             mapOf("bash" to "Run bash", "read" to "Read a file")[name]
         override fun piPathMessages(): List<Map<String, Any?>> = pathMessages.toList()
+        var compactRequested = false
+        override fun compactNow() { compactRequested = true }
     }
 
     private fun serve(agent: RpcAgent, metaDir: java.nio.file.Path? = null, lines: List<String>): List<Map<String, Any?>> {
@@ -179,6 +181,15 @@ class RpcServerTest {
         val types = out.map { dev.ki.cli.store.KiJson.readMap(it)["type"] }
         assertTrue("agent_end" in types, "abort must end the run: $types")
         assertTrue("agent_start" in types)
+    }
+
+    @Test
+    fun `compact request flags the next turn for compression`() {
+        val agent = FakeAgent()
+        val lines = serve(agent, lines = listOf("""{"type":"compact","id":"r1"}"""))
+        assertEquals(true, lines.first()["success"])
+        assertEquals(mapOf("pending" to true), lines.first()["data"])
+        assertTrue(agent.compactRequested)
     }
 
     @Test

@@ -92,7 +92,7 @@ object PiMessageCodec {
             "content" to content,
             "api" to (m.metaInfo.metadata.str("pi_api") ?: identity.api),
             "provider" to (m.metaInfo.metadata.str("pi_provider") ?: identity.provider),
-            "model" to (m.metaInfo.modelId ?: identity.defaultModel),
+            "model" to (m.metaInfo.modelId?.takeIf { it.isNotBlank() } ?: identity.defaultModel),
             "usage" to usageToPi(m),
             "stopReason" to stopReasonToPi(m.finishReason),
             "timestamp" to m.metaInfo.timestamp.toEpochMilliseconds(),

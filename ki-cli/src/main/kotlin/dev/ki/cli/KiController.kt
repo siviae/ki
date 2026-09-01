@@ -32,6 +32,7 @@ class KiController(private val session: KiSession) : SlashContext, dev.ki.cli.rp
         historyProvider = session.historyProvider,
         usageMeter = session.usageMeter,
         checkpointProvider = session.checkpointProvider,
+        keepLastMessages = session.keepLastMessages,
         streaming = true,
     )
 
@@ -88,6 +89,8 @@ class KiController(private val session: KiSession) : SlashContext, dev.ki.cli.rp
         val store = session.store as? dev.ki.cli.store.PiJsonlSessionStore ?: return emptyList()
         return store.piPathMessages(activeSessionId)
     }
+
+    override fun compactNow() = agent.compactNow()
 
     // --- SlashContext ---------------------------------------------------------
     override fun model(): String = agent.modelId

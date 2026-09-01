@@ -2,6 +2,9 @@ package dev.ki.cli
 
 import dev.ki.cli.config.Bootstrap
 import dev.ki.cli.config.CliArgs
+import ai.koog.prompt.message.Message
+import ai.koog.prompt.message.MessagePart
+import dev.ki.store.MessageCodec
 import dev.ki.store.StoredMessage
 import java.nio.file.Files
 import java.nio.file.Path
@@ -21,7 +24,7 @@ class KiControllerTest {
                 api_key_env = "LITELLM_API_KEY"
                 model = "a"
                 [db]
-                path = "ki.db"
+                path = "sessions"
                 [tools.bash]
                 [tools.read]
                 [models.a]
@@ -52,7 +55,7 @@ class KiControllerTest {
     @Test fun `resume with no id lists saved sessions`() {
         val session = Bootstrap.build(CliArgs(configPath = manifest()), "SYS")
         session.store.let { store ->
-            store.save("alpha", listOf(StoredMessage(0, "User", """{"t":"hi"}""")))
+            store.save("alpha", listOf(StoredMessage(0, "User", MessageCodec.encode(Message.User(listOf(MessagePart.Text("hi")), ai.koog.prompt.message.RequestMetaInfo(kotlin.time.Instant.fromEpochMilliseconds(0)))))))
             val out = KiController(session).resume(null)
             assertTrue(out.contains("alpha"), "listing should name the saved session")
         }
@@ -61,7 +64,7 @@ class KiControllerTest {
     @Test fun `resume switches the active session in place`() {
         val session = Bootstrap.build(CliArgs(configPath = manifest()), "SYS")
         session.store.let { store ->
-            store.save("beta", listOf(StoredMessage(0, "User", """{"t":"hi"}""")))
+            store.save("beta", listOf(StoredMessage(0, "User", MessageCodec.encode(Message.User(listOf(MessagePart.Text("hi")), ai.koog.prompt.message.RequestMetaInfo(kotlin.time.Instant.fromEpochMilliseconds(0)))))))
             val c = KiController(session)
             val out = c.resume("beta")
             assertTrue(out.contains("Resumed session beta"))

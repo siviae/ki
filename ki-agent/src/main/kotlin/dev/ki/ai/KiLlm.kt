@@ -21,12 +21,15 @@ class KiLlm private constructor(
 ) {
     constructor(config: KiConfig) : this(
         executor = RetryingPromptExecutor(
-            MultiLLMPromptExecutor(
-                DoubleEncodedArgsWorkaroundClient(
-                    apiKey = config.apiKey,
-                    settings = OpenAIClientSettings(baseUrl = normalizeBaseUrl(config.baseUrl)),
-                )
-            )
+            temperatureOverride(
+                config,
+                MultiLLMPromptExecutor(
+                    DoubleEncodedArgsWorkaroundClient(
+                        apiKey = config.apiKey,
+                        settings = OpenAIClientSettings(baseUrl = normalizeBaseUrl(config.baseUrl)),
+                    )
+                ),
+            ),
         ),
         defaultModel = KiModel(
             id = config.defaultModelId,
@@ -36,6 +39,10 @@ class KiLlm private constructor(
     )
 
     companion object {
+        /** Wrap with the temperature override when `[llm].temperature` is set (else no-op). */
+        private fun temperatureOverride(config: KiConfig, executor: PromptExecutor): PromptExecutor =
+            config.temperature?.let { TemperatureOverrideExecutor(executor, it) } ?: executor
+
         /** Build from an explicit executor + model (embedding / tests). */
         fun of(executor: PromptExecutor, model: KiModel): KiLlm = KiLlm(executor, model)
 

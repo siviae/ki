@@ -47,6 +47,8 @@ class PiJsonlSessionStore(
     private val provider: String = "ki",
     /** pi api name for assistant entries (e.g. "openai-completions"). */
     private val api: String = "openai-completions",
+    /** Fallback model id for assistant entries (koog responses may carry no modelId). */
+    private val defaultModel: String = "",
 ) : SessionStore {
     private val states = HashMap<String, SessionState>()
     private val lock = Any()
@@ -81,7 +83,7 @@ class PiJsonlSessionStore(
             val systemPrompt = koog.filterIsInstance<Message.System>().firstOrNull()
                 ?.parts?.joinToString("") { it.text }
             val conversation = koog.filter { it !is Message.System }
-            val identity = PiMessageCodec.AssistantIdentity(provider, api, defaultModel = "")
+            val identity = PiMessageCodec.AssistantIdentity(provider, api, defaultModel)
 
             // sidecar: the base system prompt (mirrors pi's hats.ts `.system.md`)
             if (systemPrompt != null) {

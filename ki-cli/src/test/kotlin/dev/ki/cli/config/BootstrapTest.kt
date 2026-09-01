@@ -1,7 +1,10 @@
 package dev.ki.cli.config
 
 import ai.koog.agents.core.tools.Tool
+import ai.koog.prompt.message.Message
+import ai.koog.prompt.message.MessagePart
 import dev.ki.agent.config.ManifestException
+import dev.ki.store.MessageCodec
 import dev.ki.agent.hooks.ToolBlockedException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
@@ -29,7 +32,7 @@ class BootstrapTest {
             api_key_env = "LITELLM_API_KEY"
             model = "gpt-4o"
             [db]
-            path = "ki.db"
+            path = "sessions"
             [tools.bash]
             [tools.read]
             """.trimIndent()
@@ -72,7 +75,7 @@ class BootstrapTest {
             api_key_env = "LITELLM_API_KEY"
             model = "small"
             [db]
-            path = "ki.db"
+            path = "sessions"
             [tools.bash]
             [models.small]
             id = "gpt-4o-mini"
@@ -154,13 +157,21 @@ class BootstrapTest {
     }
 
     @Test fun `--continue resumes the most recent session`() {
-        val cfg = writeManifest("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[db]\npath = \"ki.db\"\n[tools.bash]\n")
+        val cfg = writeManifest("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[db]\npath = \"sessions\"\n[tools.bash]\n")
         // Seed two sessions directly in the store the bootstrap will open.
         val first = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
         first.store.let { s ->
-            s.save("old", listOf(dev.ki.store.StoredMessage(0, "User", "{}")))
+            val msg = { id: String ->
+                dev.ki.store.StoredMessage(
+                    0, "User",
+                    MessageCodec.encode(
+                        Message.User(listOf(MessagePart.Text(id)), ai.koog.prompt.message.RequestMetaInfo(kotlin.time.Instant.fromEpochMilliseconds(0)))
+                    ),
+                )
+            }
+            s.save("old", listOf(msg("old")))
             Thread.sleep(5)
-            s.save("recent", listOf(dev.ki.store.StoredMessage(0, "User", "{}")))
+            s.save("recent", listOf(msg("recent")))
         }
         val resumed = Bootstrap.build(CliArgs(configPath = cfg, continueLatest = true), "SYS")
         resumed.store.let { assertEquals("recent", resumed.sessionId) }

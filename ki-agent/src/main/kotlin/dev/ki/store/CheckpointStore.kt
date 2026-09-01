@@ -19,9 +19,10 @@ data class StoredCheckpoint(
  * [StoreCheckpointProvider] adapts this SPI to koog's `PersistenceStorageProvider`, so
  * implementations deal only in [StoredCheckpoint] and never touch koog.
  *
- * Two deployments, one contract (mirrors [SessionStore]): the CLI backs it with the
- * same embedded SQLite connection, a host Spring app with Postgres via `JdbcTemplate`.
- * This is exactly the seam M10 fails over across nodes.
+ * Two deployments, one contract (mirrors [SessionStore]): a host Spring app may back
+ * it with Postgres via `JdbcTemplate` — exactly the seam M10 fails over across nodes.
+ * The CLI currently ships no checkpoint store (sessions are pi-format JSONL, no
+ * recovery); embedded hosts may plug their own [StoreCheckpointProvider].
  *
  * Unlike [SessionStore.save] (replace semantics), [save] **appends** — koog writes one
  * new checkpoint per node and versions the next from [latest]; history is not rewritten.
