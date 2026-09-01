@@ -31,6 +31,15 @@ data class CliArgs(
     val hat: String? = null,
     /** Print the resolved configuration as JSON to stdout and exit (parity/debug aid). */
     val printResolved: Boolean = false,
+    /** Run mode: null (TUI/one-shot) or "rpc" — pi-dialect JSONL over stdin/stdout (M1.4). */
+    val mode: String? = null,
+    /**
+     * Session id requested by the RPC caller (pi's --session-id): becomes the active
+     * conversation id so the session file, telemetry and /resume all key on it.
+     */
+    val sessionId: String? = null,
+    /** pi-CLI compatibility no-op: ki executes every listed tool without approval gates. */
+    val approve: Boolean = false,
     /** INFO-level logging to `.ki/logs/`. */
     val verbose: Boolean = false,
     /** DEBUG-level logging to `.ki/logs/`. */
@@ -63,6 +72,9 @@ data class CliArgs(
                     "--debug" -> args = args.copy(debug = true)
                     "--hat" -> args = args.copy(hat = next(a))
                     "--print-resolved" -> args = args.copy(printResolved = true)
+                    "--mode" -> args = args.copy(mode = next(a))
+                    "--session-id" -> args = args.copy(sessionId = next(a))
+                    "--approve" -> args = args.copy(approve = true)
                     else -> rest.add(a)
                 }
                 i++

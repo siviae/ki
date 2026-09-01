@@ -14,7 +14,7 @@ import dev.ki.cli.ui.SlashContext
  * usage accumulator — so conversation history (M4) and the running cost total carry
  * across the switch untouched.
  */
-class KiController(private val session: KiSession) : SlashContext {
+class KiController(private val session: KiSession) : SlashContext, dev.ki.cli.rpc.RpcAgent {
 
     private var agent: KiAgent = buildAgent(session.llm)
 
@@ -72,6 +72,21 @@ class KiController(private val session: KiSession) : SlashContext {
             ?: return "No session '$id'. Use /resume to list saved sessions."
         activeSessionId = id
         return "Resumed session $id (${target.messageCount} messages). Your next message continues it."
+    }
+
+    // --- RpcAgent (ki-rpc, M1.4) ----------------------------------------------
+    override suspend fun runTurn(
+        prompt: String,
+        onReasoning: ((String) -> Unit)?,
+        onTool: ((dev.ki.agent.ToolCallEvent) -> Unit)?,
+    ): String = run(prompt, onReasoning ?: {}, onTool ?: {})
+
+    override val toolNames: List<String> = session.tools.map { it.descriptor?.name ?: it.name }
+    override fun toolDescription(name: String): String =
+        session.tools.firstOrNull { it.descriptor?.name == name }?.descriptor?.description ?: ""
+    override fun piPathMessages(): List<Map<String, Any?>> {
+        val store = session.store as? dev.ki.cli.store.PiJsonlSessionStore ?: return emptyList()
+        return store.piPathMessages(activeSessionId)
     }
 
     // --- SlashContext ---------------------------------------------------------

@@ -268,6 +268,7 @@ object Bootstrap {
     }
 
     private fun resolveSessionId(args: CliArgs, store: SessionStore): String = when {
+        args.sessionId != null -> args.sessionId!! // RPC caller's id (pi --session-id parity)
         args.resume != null -> args.resume
         args.continueLatest -> store.listSessions().firstOrNull()?.conversationId ?: UUID.randomUUID().toString()
         else -> UUID.randomUUID().toString()

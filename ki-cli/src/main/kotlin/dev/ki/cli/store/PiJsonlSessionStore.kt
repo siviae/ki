@@ -106,6 +106,16 @@ class PiJsonlSessionStore(
         }
     }
 
+    /**
+     * The session's current tree-path messages in pi JSON shape (what pi's
+     * `buildSessionContext` replays, minus the synthesized System row). The ki-rpc layer
+     * (M1.4) uses this to build `agent_end.messages` — the same maps the JSONL entries
+     * carry, with usage/model/provider/timestamps already in pi's dialect.
+     */
+    fun piPathMessages(conversationId: String): List<Map<String, Any?>> = synchronized(lock) {
+        state(conversationId).pathMessages.toList()
+    }
+
     override fun listSessions(): List<SessionInfo> = synchronized(lock) {
         if (!sessionDir.isDirectory()) return emptyList()
         val files = Files.list(sessionDir).toList().filter { it.extension == "jsonl" }

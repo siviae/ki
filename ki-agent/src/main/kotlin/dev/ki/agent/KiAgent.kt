@@ -42,8 +42,21 @@ enum class ToolPhase { STARTING, OK, ERROR }
  * the UI can update the same transcript line as the call moves STARTING → OK / ERROR — the
  * pi-style pending → success/error background stripe. [result] is the tool's own output
  * (OK) or failure message (ERROR); always null on STARTING.
+ *
+ * [fullArgs] (raw JSON text of the call arguments) and [fullResult] (the untruncated
+ * koog result element) exist for the ki-rpc layer (M1.4): pi's tool_execution events
+ * carry the complete args object and result value, while [args]/[result] stay previews
+ * so the TUI keeps its one-line rendering. The UI ignores these fields.
  */
-data class ToolCallEvent(val id: String, val name: String, val args: String, val phase: ToolPhase, val result: String? = null)
+data class ToolCallEvent(
+    val id: String,
+    val name: String,
+    val args: String,
+    val phase: ToolPhase,
+    val result: String? = null,
+    val fullArgs: String? = null,
+    val fullResult: ai.koog.serialization.JSONElement? = null,
+)
 
 /**
  * The agent runtime, built on koog's [AIAgent]. Holds the system prompt, model,
@@ -220,15 +233,15 @@ class KiAgent(
                 onLLMCallCompleted { ctx -> updateUsage(ctx.prompt, ctx.response) }
                 onToolCallStarting { ctx ->
                     currentTool = ctx.toolName
-                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.STARTING))
+                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.STARTING, fullArgs = ctx.toolArgs.toString()))
                 }
                 onToolCallCompleted { ctx ->
                     currentTool = null
-                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.OK, resultPreview(ctx.toolResult)))
+                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.OK, resultPreview(ctx.toolResult), fullArgs = ctx.toolArgs.toString(), fullResult = ctx.toolResult))
                 }
                 onToolCallFailed { ctx ->
                     currentTool = null
-                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.ERROR, ctx.message.takeIf { it.isNotBlank() }))
+                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.ERROR, ctx.message.takeIf { it.isNotBlank() }, fullArgs = ctx.toolArgs.toString()))
                 }
             }
         },

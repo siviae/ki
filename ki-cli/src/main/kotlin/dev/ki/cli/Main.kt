@@ -8,6 +8,7 @@ import dev.ki.tui.ProcessTerminal
 import dev.ki.tui.Tui
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.runBlocking
+import java.nio.file.Path
 import kotlin.system.exitProcess
 
 private val SYSTEM_PROMPT = """
@@ -23,6 +24,27 @@ fun main(argv: Array<String>) {
     // first logger acquisition (the kotlin-logging init banner writes to stdout).
     if (args.printResolved) {
         println(Bootstrap.resolveForPrint(args).toPrettyString())
+        return
+    }
+
+    // RPC mode: pi-dialect JSONL on stdin/stdout (M1.4). The only stdout noise allowed
+    // is the kotlin-logging init banner, which we flush BEFORE the first JSON line by
+    // acquiring a logger up front; the bot's line reader skips non-JSON anyway.
+    if (args.mode == "rpc") {
+        Logging.configure(args, args.dbPath)
+        KotlinLogging.logger {}
+        val session = try {
+            Bootstrap.build(args, SYSTEM_PROMPT)
+        } catch (e: ManifestException) {
+            System.err.println("ki: ${e.message}")
+            exitProcess(2)
+        }
+        val root = args.configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath()
+        try {
+            dev.ki.cli.rpc.serveRpc(KiController(session), root.resolve(".pi/extensions/tool-meta"))
+        } finally {
+            (session.store as? java.io.Closeable)?.close()
+        }
         return
     }
 
