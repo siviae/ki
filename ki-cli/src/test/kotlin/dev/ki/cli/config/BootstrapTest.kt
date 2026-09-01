@@ -35,7 +35,7 @@ class BootstrapTest {
             """.trimIndent()
         )
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        session.store.use {
+        session.store.let {
             assertEquals(2, session.tools.size)
         }
     }
@@ -43,7 +43,7 @@ class BootstrapTest {
     @Test fun `an unlisted builtin is simply absent`() {
         val cfg = writeManifest("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[tools.bash]\n")
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        session.store.use { assertEquals(1, session.tools.size) }
+        session.store.let { assertEquals(1, session.tools.size) }
     }
 
     @Test fun `unknown non-builtin tool without a script errors`() {
@@ -58,7 +58,7 @@ class BootstrapTest {
         val cfg = dir.resolve("ki.toml")
         cfg.writeText("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[context]\nfiles = [\"KI.md\"]\n[tools.bash]\n")
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        session.store.use {
+        session.store.let {
             assertTrue(session.systemPrompt.startsWith("SYS"))
             assertTrue(session.systemPrompt.contains("Project rule: be terse."))
         }
@@ -80,7 +80,7 @@ class BootstrapTest {
             """.trimIndent()
         )
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        session.store.use {
+        session.store.let {
             assertEquals("gpt-4o-mini", session.llm.defaultModel.id)
             assertEquals(8000, session.llm.defaultModel.contextWindow)
         }
@@ -93,7 +93,7 @@ class BootstrapTest {
         // A sibling adds another tool; no --config for it, discovery must pick it up.
         dir.resolve("ki.extra.toml").writeText("[tools.read]\n")
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        session.store.use { assertEquals(2, session.tools.size) }
+        session.store.let { assertEquals(2, session.tools.size) }
     }
 
     @Test fun `a duplicate key across primary and sibling fails the build`() {
@@ -144,7 +144,7 @@ class BootstrapTest {
         )
 
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        session.store.use {
+        session.store.let {
             @Suppress("UNCHECKED_CAST")
             val bash = session.tools.first { it.descriptor.name == "bash" } as Tool<JsonObject, String>
             assertFailsWith<ToolBlockedException> {
@@ -157,12 +157,12 @@ class BootstrapTest {
         val cfg = writeManifest("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[db]\npath = \"ki.db\"\n[tools.bash]\n")
         // Seed two sessions directly in the store the bootstrap will open.
         val first = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        first.store.use { s ->
+        first.store.let { s ->
             s.save("old", listOf(dev.ki.store.StoredMessage(0, "User", "{}")))
             Thread.sleep(5)
             s.save("recent", listOf(dev.ki.store.StoredMessage(0, "User", "{}")))
         }
         val resumed = Bootstrap.build(CliArgs(configPath = cfg, continueLatest = true), "SYS")
-        resumed.store.use { assertEquals("recent", resumed.sessionId) }
+        resumed.store.let { assertEquals("recent", resumed.sessionId) }
     }
 }

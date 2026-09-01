@@ -36,7 +36,7 @@ class KiControllerTest {
 
     @Test fun `switch model rebuilds against the new model, tools unchanged`() {
         val session = Bootstrap.build(CliArgs(configPath = manifest()), "SYS")
-        session.store.use {
+        session.store.let {
             val c = KiController(session)
             assertEquals("gpt-4o", c.model())
             val toolsBefore = c.tools()
@@ -51,7 +51,7 @@ class KiControllerTest {
 
     @Test fun `resume with no id lists saved sessions`() {
         val session = Bootstrap.build(CliArgs(configPath = manifest()), "SYS")
-        session.store.use { store ->
+        session.store.let { store ->
             store.save("alpha", listOf(StoredMessage(0, "User", """{"t":"hi"}""")))
             val out = KiController(session).resume(null)
             assertTrue(out.contains("alpha"), "listing should name the saved session")
@@ -60,7 +60,7 @@ class KiControllerTest {
 
     @Test fun `resume switches the active session in place`() {
         val session = Bootstrap.build(CliArgs(configPath = manifest()), "SYS")
-        session.store.use { store ->
+        session.store.let { store ->
             store.save("beta", listOf(StoredMessage(0, "User", """{"t":"hi"}""")))
             val c = KiController(session)
             val out = c.resume("beta")
@@ -71,7 +71,7 @@ class KiControllerTest {
 
     @Test fun `resume with an unknown id does not switch`() {
         val session = Bootstrap.build(CliArgs(configPath = manifest()), "SYS")
-        session.store.use {
+        session.store.let {
             val c = KiController(session)
             val before = c.configSummary()
             val out = c.resume("nope")
@@ -82,7 +82,7 @@ class KiControllerTest {
 
     @Test fun `config summary shows model and never leaks the api key`() {
         val session = Bootstrap.build(CliArgs(configPath = manifest()), "SYS")
-        session.store.use {
+        session.store.let {
             val summary = KiController(session).configSummary()
             assertTrue(summary.contains("gpt-4o"))
             assertTrue(!summary.contains(session.config.apiKey), "api key must not appear in /config")

@@ -43,7 +43,8 @@ fun main(argv: Array<String>) {
 
     val controller = KiController(session)
 
-    session.store.use {
+    // The store may or may not be Closeable (SQLite: yes; pi-jsonl: no-op).
+    try {
         // One-shot mode: run a single prompt, print the reply, exit.
         session.oneShotPrompt?.let { prompt ->
             // Stream reasoning + tool calls to stderr so stdout stays the clean answer (M9.1/M9.2).
@@ -61,5 +62,7 @@ fun main(argv: Array<String>) {
         KiScreen(tui, controller)
         tui.start()
         tui.awaitStop()
+    } finally {
+        (session.store as? java.io.Closeable)?.close()
     }
 }

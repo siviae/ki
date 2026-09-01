@@ -40,7 +40,16 @@ data class LlmSection(
  * process killed mid-turn resumes from the last node (not just the last completed turn). Off
  * by default — extra write per node; enable for crash-prone runs.
  */
-data class DbSection(val path: String = "./.ki/ki.db", val checkpoints: Boolean = false)
+/**
+ * [driver] selects the session-store implementation: `sqlite` (default, embedded
+ * `./.ki/ki.db`) or `pi-jsonl` (pi-format JSONL files under
+ * `~/.pi/agent/sessions/<--cwd-slug-->/` — cross-resumable with pi; checkpoints unsupported).
+ */
+data class DbSection(
+    val path: String = "./.ki/ki.db",
+    val checkpoints: Boolean = false,
+    val driver: String = "sqlite",
+)
 
 data class ContextSection(val files: List<String> = emptyList())
 

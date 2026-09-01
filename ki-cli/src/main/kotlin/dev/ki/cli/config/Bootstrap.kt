@@ -3,6 +3,7 @@ package dev.ki.cli.config
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.snapshot.providers.PersistenceStorageProvider
 import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.ArrayNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import dev.ki.agent.config.Manifest
 import dev.ki.agent.config.ManifestException
@@ -17,8 +18,10 @@ import dev.ki.agent.tools.ScriptToolLoader
 import dev.ki.agent.tools.builtin.BuiltinTools
 import dev.ki.ai.KiConfig
 import dev.ki.ai.KiLlm
+import dev.ki.cli.store.PiJsonlSessionStore
 import dev.ki.cli.store.SqliteCheckpointStore
 import dev.ki.cli.store.SqliteSessionStore
+import dev.ki.store.SessionStore
 import dev.ki.store.StoreChatHistoryProvider
 import dev.ki.store.StoreCheckpointProvider
 import java.nio.file.Files
@@ -32,7 +35,7 @@ class KiSession(
     val llm: KiLlm,
     val tools: List<ToolBase<*, *>>,
     val systemPrompt: String,
-    val store: SqliteSessionStore,
+    val store: SessionStore,
     val historyProvider: StoreChatHistoryProvider,
     val sessionId: String,
     /** M9 checkpoint provider when `[db].checkpoints` is on, else null (recovery off). */
@@ -90,13 +93,32 @@ object Bootstrap {
         val systemPrompt = buildSystemPrompt(base, manifest, root, skillsBlock)
 
         val dbPath = root.resolve(args.dbPath ?: manifest.db.path).normalize()
-        val store = SqliteSessionStore(dbPath)
+        val store: SessionStore = if (manifest.db.driver.equals("pi-jsonl", ignoreCase = true)) {
+            if (manifest.db.checkpoints) throw ManifestException(
+                "[db] checkpoints are unsupported with driver = \"pi-jsonl\" (SQLite only)."
+            )
+            // [db].path doubles as an explicit session-dir override (test/CI hook);
+            // otherwise sessions land where pi puts them — shared, cross-resumable storage.
+            val dir = if (args.dbPath != null || manifest.db.path != dev.ki.agent.config.DbSection().path)
+                dbPath
+            else
+                Path.of(System.getProperty("user.home"), ".pi", "agent", "sessions")
+                    .resolve(PiJsonlSessionStore.slugFor(root))
+            val (providerName, apiName) = resolvePiProvider(loaded.tree, config.defaultModelId)
+            PiJsonlSessionStore(dir, root, providerName, apiName)
+        } else {
+            SqliteSessionStore(dbPath)
+        }
         val provider = StoreChatHistoryProvider(store)
         val sessionId = resolveSessionId(args, store)
 
         // M9: checkpoints share the session store's SQLite connection (see SqliteCheckpointStore).
-        val checkpointProvider = if (manifest.db.checkpoints)
-            StoreCheckpointProvider(SqliteCheckpointStore(store.connection)) else null
+        val checkpointProvider = if (manifest.db.checkpoints) {
+            val sqlite = store as? SqliteSessionStore ?: throw ManifestException(
+                "[db] checkpoints are unsupported with driver = \"pi-jsonl\" (SQLite only)."
+            )
+            StoreCheckpointProvider(SqliteCheckpointStore(sqlite.connection))
+        } else null
 
         return KiSession(
             llm, tools, systemPrompt, store, provider, sessionId, checkpointProvider, args.prompt,
@@ -245,7 +267,7 @@ object Bootstrap {
         return parts.joinToString("\n\n")
     }
 
-    private fun resolveSessionId(args: CliArgs, store: SqliteSessionStore): String = when {
+    private fun resolveSessionId(args: CliArgs, store: SessionStore): String = when {
         args.resume != null -> args.resume
         args.continueLatest -> store.listSessions().firstOrNull()?.conversationId ?: UUID.randomUUID().toString()
         else -> UUID.randomUUID().toString()
@@ -308,6 +330,24 @@ object Bootstrap {
                 manifest.extensions.filterKeys { it in loaded.hatExtensionNames }
             else manifest.extensions,
         ) else manifest
+
+    /**
+     * pi provider identity for the model: scan `[pi].llmProviders` (ki ignores it for
+     * runtime purposes but the provider/api names go into pi-format session entries).
+     * Fallback: ("ki", "openai-completions").
+     */
+    private fun resolvePiProvider(tree: ObjectNode, modelId: String): Pair<String, String> {
+        val providers = tree.get("pi")?.get("llmProviders") as? ArrayNode ?: return "ki" to "openai-completions"
+        for (p in providers) {
+            val models = p.get("models") as? ArrayNode ?: continue
+            if (models.any { it.get("id")?.asText() == modelId }) {
+                val name = p.get("name")?.asText() ?: p.get("baseUrl")?.asText() ?: "ki"
+                val api = p.get("api")?.asText() ?: "openai-completions"
+                return name to api
+            }
+        }
+        return "ki" to "openai-completions"
+    }
 
     /** Filter the merged tool map down to the hat's list, ordered by the hat's declaration
      *  order (pi preserves it, and the parity harness diffs exact arrays). Script/builtin
