@@ -6,6 +6,7 @@ import dev.ki.store.SessionStore
 import dev.ki.store.StoredMessage
 import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.RequestMetaInfo
+import ai.koog.prompt.message.MessagePart
 import com.fasterxml.jackson.databind.ObjectMapper
 import java.nio.file.Files
 import java.nio.file.Path
@@ -68,9 +69,9 @@ class PiJsonlSessionStore(
             }
         }
 
-        for (msg in st.pathMessages) {
-            val koog = PiMessageCodec.toKoog(msg) ?: continue
-            rows += StoredMessage(rows.size, koog.role.name, MessageCodec.encode(koog))
+        val koogMsgs = st.pathMessages.mapNotNull { PiMessageCodec.toKoog(it) }
+        healOrphanedToolCalls(koogMsgs).forEachIndexed { i, m ->
+            rows += StoredMessage(i, m.role.name, MessageCodec.encode(m))
         }
         rows
     }
@@ -130,6 +131,62 @@ class PiJsonlSessionStore(
     }
 
     // ── save internals ──────────────────────────────────────────────────────────────
+
+    /**
+     * A turn that crashed after the assistant message was persisted but before the tool
+     * ran leaves an assistant message with a toolCall part and no matching toolResult
+     * (bot session nNWb3vJMKrv2THW3E: on resume the model kept promising text instead of
+     * re-calling the tool). Inserts one synthetic tool-result message per unpaired call,
+     * right where the result was expected — before the next non-result message, or at the
+     * end of the history.
+     */
+    private fun healOrphanedToolCalls(messages: List<Message>): List<Message> {
+        val out = ArrayList<Message>(messages.size + 1)
+        // callId -> tool name, in call order
+        val pending = LinkedHashMap<String, String>()
+
+        fun flushPending() {
+            if (pending.isEmpty()) return
+            out += Message.User(
+                parts = pending.map { (id, tool) ->
+                    MessagePart.Tool.Result(
+                        id = id,
+                        tool = tool,
+                        output = "This tool call was interrupted before execution — no result was recorded. Re-run the call if still needed.",
+                        isError = true,
+                    )
+                },
+                metaInfo = RequestMetaInfo(kotlin.time.Instant.fromEpochMilliseconds(0)),
+            )
+            pending.clear()
+        }
+
+        for (msg in messages) {
+            when (msg) {
+                is Message.User -> {
+                    val resultIds = msg.parts.filterIsInstance<MessagePart.Tool.Result>().mapNotNull { it.id }.toSet()
+                    // pending calls this message does not answer are orphaned
+                    if (pending.keys.any { it !in resultIds }) flushPending()
+                    resultIds.forEach { pending.remove(it) }
+                    out += msg
+                }
+                is Message.Assistant -> {
+                    flushPending()
+                    msg.parts.filterIsInstance<MessagePart.Tool.Call>().forEach { part ->
+                        val callId = part.id
+                        if (!callId.isNullOrBlank()) pending[callId] = part.tool
+                    }
+                    out += msg
+                }
+                else -> {
+                    flushPending()
+                    out += msg
+                }
+            }
+        }
+        flushPending()
+        return out
+    }
 
     private fun appendMessage(st: SessionState, message: Map<String, Any?>) {
         st.appendEntry(

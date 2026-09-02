@@ -324,4 +324,60 @@ class PiJsonlSessionStoreTest {
         assertTrue((usage["totalTokens"] as Number).toInt() > 0)
         assertEquals("deepseek-v4-flash:max", assistant.metaInfo.modelId)
     }
+
+    // ── orphaned tool-call healing ──────────────────────────────────────────────
+
+    /**
+     * Regression for bot session nNWb3vJMKrv2THW3E: a turn crashed AFTER the assistant
+     * message was persisted but BEFORE the tool ran, leaving an assistant message with a
+     * toolCall part that has no matching toolResult. On the next resume the model saw the
+     * dangling call and just promised more text ("Продолжаю. Проверю...") without ever
+     * calling the tool — the conversation was stuck in a promise loop. `load` must heal
+     * the history by inserting a synthetic tool result for every unpaired call.
+     */
+    @Test fun `load heals an orphaned tool call left by a crashed turn`() {
+        fun koog(m: Message) = StoredMessage(0, m.role.name, MessageCodec.encode(m))
+        val user = Message.User(
+            parts = listOf(MessagePart.Text("сделай выгрузку")),
+            metaInfo = RequestMeta(1_000),
+        )
+        val assistant = Message.Assistant(
+            parts = listOf(
+                MessagePart.Text("Эта таблица — не то. Сначала посмотрю схему."),
+                MessagePart.Tool.Call(id = "call_lost", tool = "shifts_db_query", args = "{}"),
+                MessagePart.Text("Собираю результат."),
+            ),
+            metaInfo = ResponseMeta(2_000, input = 100, output = 20, total = 120),
+            finishReason = "tool_calls",
+        )
+        val nextUser = Message.User(
+            parts = listOf(MessagePart.Text("продолжай")),
+            metaInfo = RequestMeta(3_000),
+        )
+        val store = store()
+        val id = "heal-1"
+        store.save(id, listOf(user, assistant, nextUser).map { koog(it) })
+
+        val loaded = store.load(id)
+
+        assertEquals(4, loaded.size, "expected the dangling call healed with a synthetic result")
+        val healed = MessageCodec.decode(loaded[2].json)
+        assertTrue(healed is Message.User, "synthetic result must be a tool-result user message")
+        val resultPart = healed.parts.filterIsInstance<MessagePart.Tool.Result>().single()
+        assertEquals("call_lost", resultPart.id)
+        assertEquals("shifts_db_query", resultPart.tool)
+        assertTrue(resultPart.isError, "the interrupted call never produced a real result")
+        val followUp = MessageCodec.decode(loaded[3].json)
+        assertTrue(followUp is Message.User && followUp.parts.any { it is MessagePart.Text && it.text == "продолжай" })
+    }
+
+    @Test fun `load leaves paired tool calls untouched`() {
+        val store = store()
+        val id = "heal-2"
+        store.save(id, turnRows("working"))
+
+        val loaded = store.load(id)
+
+        assertEquals(5, loaded.size, "a properly paired call must not gain a synthetic result")
+    }
 }
