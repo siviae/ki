@@ -216,10 +216,15 @@ class KiAgent(
             edge(nodeExecuteTool forwardTo nodeSendToolResult onCondition { llm.readSession { !compressionConfig.isHistoryTooBig(prompt) } })
             edge(nodeCompressHistory forwardTo nodeSendCompressedHistory)
 
-            edge(nodeSendToolResult forwardTo nodeFinish onTextMessage { true })
+            // Tool-first on the post-tool nodes: koog resolves edges FIRST-MATCH-WINS in
+            // declaration order, and a model that mixes narration text with a tool call in
+            // one message matches BOTH onTextMessage and onToolCalls. Finish-first silently
+            // ended the run without executing the call (bot session nNWb3vJMKrv2THW3E,
+            // reproduced live: mixed reply after a tool result never ran the tool).
             edge(nodeSendToolResult forwardTo nodeExecuteTool onToolCalls { true })
-            edge(nodeSendCompressedHistory forwardTo nodeFinish onTextMessage { true })
+            edge(nodeSendToolResult forwardTo nodeFinish onTextMessage { true })
             edge(nodeSendCompressedHistory forwardTo nodeExecuteTool onToolCalls { true })
+            edge(nodeSendCompressedHistory forwardTo nodeFinish onTextMessage { true })
         }
 
     private val agent: AIAgent<String, String> = AIAgent(
