@@ -92,6 +92,10 @@ class KiController(private val session: KiSession) : SlashContext, dev.ki.cli.rp
 
     override fun compactNow() = agent.compactNow()
 
+    // Mid-run steer (v2): the controller always builds the agent in streaming mode,
+    // so steerRun queues for injection whenever a turn is mid-run.
+    override fun steerRun(text: String): Boolean = agent.steer(text)
+
     // --- SlashContext ---------------------------------------------------------
     override fun model(): String = agent.modelId
     override fun tools(): List<String> = agent.toolNames

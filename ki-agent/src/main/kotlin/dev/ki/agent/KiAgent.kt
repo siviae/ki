@@ -112,6 +112,18 @@ class KiAgent(
     /** Per-run sink for tool-call lifecycle events (M9.2); set for the duration of [run]. */
     @Volatile
     private var toolSink: ((ToolCallEvent) -> Unit)? = null
+
+    /**
+     * Steer texts queued while a turn is mid-run (pi parity, v2). Drained at the
+     * post-tool safe point of [streamingStrategy] — appended as user messages BEFORE
+     * the next LLM call, so the running turn redirects instead of the steer becoming
+     * a separate turn after agent_end.
+     */
+    private val pendingSteers = java.util.concurrent.ConcurrentLinkedQueue<String>()
+
+    /** True between run() entry and exit — [steer] queues only mid-run. */
+    @Volatile
+    private var turnActive = false
     private val tokenizer = KiTokenizer()
     private val window: Long = llm.defaultModel.contextWindow
     private val budgetTokens: Long = maxOf(MIN_BUDGET, (window * contextBudgetRatio).toLong())
@@ -197,6 +209,7 @@ class KiAgent(
             val nodeSendToolResult by node<ReceivedToolResults, Message.Assistant>("streamSendToolResult") { results ->
                 llm.writeSession {
                     appendPrompt { user { results.toolResults.forEach { r -> toolResult(r.toMessagePart()) } } }
+                    drainSteers()
                     streamFold()
                 }
             }
@@ -205,7 +218,10 @@ class KiAgent(
                 retrievalModel = compressionConfig.retrievalModel,
             )
             val nodeSendCompressedHistory by node<ReceivedToolResults, Message.Assistant> {
-                llm.writeSession { requestLLM() }
+                llm.writeSession {
+                    drainSteers()
+                    requestLLM()
+                }
             }
 
             edge(nodeStart forwardTo nodeCallLLM)
@@ -274,12 +290,36 @@ class KiAgent(
     ): String {
         reasoningSink = onReasoning
         toolSink = onTool
+        turnActive = true
         return try {
             agent.run(input, sessionId)
         } finally {
             reasoningSink = null
             toolSink = null
             forceCompression = false
+            turnActive = false
+            pendingSteers.clear()
+        }
+    }
+
+    /**
+     * Queue a mid-run steer. Returns true when the text was queued for injection at
+     * the next safe point of the ACTIVE run (streaming mode, turn in progress);
+     * false when there is nothing to inject into — the caller falls back to treating
+     * the text as a regular next-turn message.
+     */
+    fun steer(text: String): Boolean {
+        if (!streaming || !turnActive) return false
+        if (text.isBlank()) return false
+        pendingSteers.add(text)
+        return true
+    }
+
+    /** Drain queued steers into the session as user messages (call inside writeSession). */
+    private fun ai.koog.agents.core.agent.session.AIAgentLLMWriteSession.drainSteers() {
+        while (true) {
+            val text = pendingSteers.poll() ?: break
+            appendPrompt { user(text) }
         }
     }
 

@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * Regression for bot session nNWb3vJMKrv2THW3E (koog 1.0.0-preview7 era): the model
@@ -150,5 +151,74 @@ class MixedMessageToolLoopTest {
 
         assertEquals("done", result)
         assertEquals(listOf(ToolPhase.STARTING, ToolPhase.OK), events.map { it.phase })
+    }
+
+    /**
+     * Mid-run steering (pi parity): a steer message that arrives while the run is
+     * between tool calls must be injected into the prompt BEFORE the next LLM call —
+     * not queued until the whole run ends. Bot sessions run long turns; a user's
+     * "используй другую таблицу" must redirect the current run, not become a new one.
+     */
+    @Test fun `steer arriving after a tool result is injected into the next LLM call`() {
+        // Records the user-side prompt text of every LLM call.
+        val promptTexts = mutableListOf<String>()
+        class RecordingExecutor : PromptExecutor() {
+            val replies = ArrayDeque(
+                listOf(
+                    toolCallMessage("c1", "probe", "{}"),
+                    textMessage("done"),
+                ),
+            )
+            override suspend fun execute(prompt: Prompt, model: LLModel, tools: List<ToolDescriptor>): Message.Assistant =
+                throw NotImplementedError()
+
+            override fun executeStreaming(prompt: Prompt, model: LLModel, tools: List<ToolDescriptor>): Flow<StreamFrame> = flow {
+                promptTexts += prompt.messages
+                    .filterIsInstance<Message.User>()
+                    .flatMap { it.parts }
+                    .filterIsInstance<MessagePart.Text>()
+                    .joinToString("\n") { it.text }
+                val r = replies.removeFirst()
+                for (part in r.parts) {
+                    when (part) {
+                        is MessagePart.Text -> emit(StreamFrame.TextComplete(part.text))
+                        is MessagePart.Tool.Call -> emit(StreamFrame.ToolCallComplete(part.id, part.tool, part.args))
+                        else -> {}
+                    }
+                }
+                emit(StreamFrame.End(metaInfo = ResponseMetaInfo.Empty))
+            }
+            override suspend fun executeMultipleChoices(prompt: Prompt, model: LLModel, tools: List<ToolDescriptor>): List<Message.Assistant> =
+                throw NotImplementedError()
+            override suspend fun moderate(prompt: Prompt, model: LLModel): ModerationResult = throw NotImplementedError()
+            override fun close() {}
+        }
+
+        val executor = RecordingExecutor()
+        val llm = KiLlm.of(executor, KiModel(id = "test", contextWindow = 4000))
+        val agent = KiAgent(llm, systemPrompt = "sys", tools = listOf(probeTool()), streaming = true)
+
+        // Steer exactly when the first tool finished — mid-run, before LLM call #2.
+        runBlocking {
+            agent.run("go", onTool = { e ->
+                if (e.phase == ToolPhase.OK) agent.steer("use table extra_hours_requests instead")
+            })
+        }
+
+        assertTrue(
+            promptTexts.size >= 2,
+            "expected two LLM calls, got ${'$'}{promptTexts.size}",
+        )
+        assertTrue(
+            promptTexts[1].contains("use table extra_hours_requests instead"),
+            "steer text must be in the second call's prompt, got: ${'$'}{promptTexts[1]}",
+        )
+    }
+
+    @Test fun `steer with no active run is rejected`() {
+        val executor = ScriptedStreamingExecutor(listOf(textMessage("ok")))
+        val llm = KiLlm.of(executor, KiModel(id = "test", contextWindow = 4000))
+        val agent = KiAgent(llm, systemPrompt = "sys", tools = listOf(probeTool()), streaming = true)
+        assertTrue(!agent.steer("stop"), "no run active — must not queue")
     }
 }

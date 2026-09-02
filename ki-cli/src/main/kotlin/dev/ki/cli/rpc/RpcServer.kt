@@ -40,6 +40,14 @@ interface RpcAgent {
     fun compactNow()
 
     /**
+     * Queue a mid-run steer (pi parity, v2). Returns true when the text was queued for
+     * injection at the active run's next safe point; false when no run is active (or the
+     * agent cannot inject) — the server then treats the text as a regular next-turn
+     * message (v1 fallback).
+     */
+    fun steerRun(text: String): Boolean
+
+    /**
      * The conversation's current tree-path messages in pi JSON shape — the source for
      * `agent_end.messages` (telemetry reads usage/model/provider/stopReason off the last
      * assistant entry).
@@ -63,11 +71,13 @@ interface RpcAgent {
  * store's pi-shaped tree path after the turn — the same entries the M1.3 JSONL writer
  * persists, so usage/model/provider/stopReason/timestamps are already pi-native.
  *
- * Steering (v1, turn-boundary queue): pi processes `steer` within the active run; ki
- * queues the message and answers it as the next turn of the SAME run — `agent_end` fires
- * only after the queue drains. The bot's timeout flow (steer at think_sec, resolve on the
- * single `agent_end`) observes identical behavior. A turn failure (LLM error) ends the
- * run like pi's does: `agent_end` carries the store's last known messages.
+ * Steering (v2): while a turn is mid-run, `steer` is injected at the agent's post-tool
+ * safe point — appended as a user message before the next LLM call, so the RUNNING turn
+ * redirects (pi parity). When no turn is active the steer falls back to the v1
+ * turn-boundary queue: answered as the next turn of the SAME run — `agent_end` fires
+ * only after the queue drains. The bot's timeout flow (steer at think_sec, resolve on
+ * the single `agent_end`) observes identical behavior. A turn failure (LLM error) ends
+ * the run like pi's does: `agent_end` carries the store's last known messages.
  */
 class RpcServer(
     private val agent: RpcAgent,
@@ -100,9 +110,16 @@ class RpcServer(
     private fun handle(request: Map<String, Any?>) {
         val id = request["id"]
         when (request["type"]) {
-            "prompt", "steer", "follow_up" -> {
+            "prompt", "follow_up" -> {
                 respond(id, success = true)
                 submit(request["message"] as? String ?: "")
+            }
+            "steer" -> {
+                respond(id, success = true)
+                val text = request["message"] as? String ?: ""
+                // v2: mid-run injection when a turn is active; v1 fallback queues it as
+                // the next turn of the same run (agent_end still fires only after drain).
+                if (!agent.steerRun(text)) submit(text)
             }
             "abort" -> {
                 respond(id, success = true)

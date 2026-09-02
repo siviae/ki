@@ -24,6 +24,7 @@ class RpcServerTest {
         private val failFirst: Boolean = false,
     ) : RpcAgent {
         val prompts = ArrayList<String>()
+        val steers = ArrayList<String>()
         val pathMessages = ArrayList<Map<String, Any?>>()
         var runFailure: Throwable? = null
         var afterRun: (() -> Unit)? = null
@@ -88,7 +89,14 @@ class RpcServerTest {
             mapOf("bash" to "Run bash", "read" to "Read a file")[name]
         override fun piPathMessages(): List<Map<String, Any?>> = pathMessages.toList()
         var compactRequested = false
+        /** When false, steerRun rejects — emulates an agent that cannot inject. */
+        var acceptSteers = true
         override fun compactNow() { compactRequested = true }
+        override fun steerRun(text: String): Boolean {
+            if (!acceptSteers) return false
+            steers.add(text)
+            return true
+        }
     }
 
     private fun serve(agent: RpcAgent, metaDir: java.nio.file.Path? = null, lines: List<String>): List<Map<String, Any?>> {
@@ -149,7 +157,7 @@ class RpcServerTest {
     }
 
     @Test
-    fun `steer during a run is answered in the same run - one agent_end after the queue drains`() {
+    fun `steer during a run goes to steerRun - no extra turn`() {
         val agent = FakeAgent()
         val lines = serve(
             agent,
@@ -158,14 +166,29 @@ class RpcServerTest {
                 """{"type":"steer","id":"r2","message":"steered"}""",
             ),
         )
-        // both prompts answered (ki v1: steer = next turn of the same run)
-        assertEquals(listOf("first", "steered"), agent.prompts)
+        // v2: the steer was handed to steerRun (fake records it) and must NOT become
+        // a new turn; the run still ends with a single agent_end.
+        assertEquals(listOf("first"), agent.prompts)
+        assertEquals(listOf("steered"), agent.steers)
         val agentEnds = lines.filter { it["type"] == "agent_end" }
         assertEquals(1, agentEnds.size, "one run, one agent_end: ${lines.map { it["type"] }}")
-        val starts = lines.filter { it["type"] == "agent_start" }
-        assertEquals(1, starts.size)
-        // the final agent_end carries BOTH turns' messages
-        assertEquals(4, (agentEnds[0]["messages"] as List<*>).size)
+    }
+
+    @Test
+    fun `steer with no active run falls back to a next turn`() {
+        // The steer arrives with no turn in flight (fake run already done) ->
+        // steerRun returns false -> fallback submits it as a regular next turn.
+        val agent = FakeAgent(turns = 2).apply { acceptSteers = false }
+        val lines = serve(
+            agent,
+            lines = listOf(
+                """{"type":"steer","id":"r1","message":"unsolicited"}""",
+            ),
+        )
+        assertEquals(emptyList(), agent.steers, "no active run - must not queue")
+        assertEquals(listOf("unsolicited"), agent.prompts)
+        val agentEnds = lines.filter { it["type"] == "agent_end" }
+        assertEquals(1, agentEnds.size)
     }
 
     @Test
