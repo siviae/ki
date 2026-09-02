@@ -1,7 +1,7 @@
 [versions]
 kotlin = "2.3.21"
-koog = "1.0.0-preview7"
-koogExt = "1.0.0-beta-preview7"
+koog = "1.2.0"
+koogExt = "1.2.0-beta"
 coroutines = "1.10.2"
 serialization = "1.9.0"
 nuprocess = "3.0.0" # 4.0.0 targets Java 25 bytecode; 3.0.0 (Java 7) works on JDK 21

@@ -10,7 +10,7 @@ import ai.koog.prompt.message.MessagePart
  * for `onProviderRequest` masking: return the masked copy for the wire while the persisted prompt
  * (which backs chat-memory) stays untouched — `copy` never mutates the receiver.
  *
- * Transformed: `Text.text`, `Tool.Result.output`, `Tool.Call.args`, and `Reasoning`
+ * Transformed: `Text.text`, `Tool.Result` text parts, `Tool.Call.args`, and `Reasoning`
  * content/summary. `Tool.Call.args` **is** masked: a tool gets its secrets from its own config,
  * never from LLM-produced args, so a secret appearing there is always illegitimate — masking it is
  * safe (value replacement is JSON-safe) and closes the leak of past tool calls to the provider as
@@ -29,8 +29,14 @@ private fun Message.mapText(t: (String) -> String): Message = when (this) {
 
 private fun MessagePart.RequestPart.mapRequestPart(t: (String) -> String): MessagePart.RequestPart = when (this) {
     is MessagePart.Text -> copy(text = t(text))
-    is MessagePart.Tool.Result -> copy(output = t(output))
+    // koog 1.1+: Tool.Result carries parts (List<ContentPart>) instead of a single output string.
+    is MessagePart.Tool.Result -> copy(parts = parts.map { it.mapContentPart(t) })
     else -> this // Attachment and anything else: keep as-is.
+}
+
+private fun MessagePart.ContentPart.mapContentPart(t: (String) -> String): MessagePart.ContentPart = when (this) {
+    is MessagePart.Text -> copy(text = t(text))
+    else -> this // Image/File/binary content: keep as-is.
 }
 
 private fun MessagePart.ResponsePart.mapResponsePart(t: (String) -> String): MessagePart.ResponsePart = when (this) {
