@@ -21,12 +21,15 @@ class KiLlm private constructor(
 ) {
     constructor(config: KiConfig) : this(
         executor = RetryingPromptExecutor(
-            MultiLLMPromptExecutor(
-                DoubleEncodedArgsWorkaroundClient(
-                    apiKey = config.apiKey,
-                    settings = OpenAIClientSettings(baseUrl = config.baseUrl),
-                )
-            )
+            temperatureOverride(
+                config,
+                MultiLLMPromptExecutor(
+                    DoubleEncodedArgsWorkaroundClient(
+                        apiKey = config.apiKey,
+                        settings = OpenAIClientSettings(baseUrl = normalizeBaseUrl(config.baseUrl)),
+                    )
+                ),
+            ),
         ),
         defaultModel = KiModel(
             id = config.defaultModelId,
@@ -36,7 +39,20 @@ class KiLlm private constructor(
     )
 
     companion object {
+        /** Wrap with the temperature override when `[llm].temperature` is set (else no-op). */
+        private fun temperatureOverride(config: KiConfig, executor: PromptExecutor): PromptExecutor =
+            config.temperature?.let { TemperatureOverrideExecutor(executor, it) } ?: executor
+
         /** Build from an explicit executor + model (embedding / tests). */
         fun of(executor: PromptExecutor, model: KiModel): KiLlm = KiLlm(executor, model)
+
+        /**
+         * koog appends `v1/chat/completions` to the base URL itself (its default is
+         * `https://api.openai.com`, no `/v1`). pi-style configs spell the base URL WITH
+         * `/v1` (e.g. `https://host/v1`) — strip the suffix so both spellings hit the same
+         * endpoint instead of `/v1v1/chat/completions` (404).
+         */
+        fun normalizeBaseUrl(url: String): String =
+            url.trimEnd('/').removeSuffix("/v1")
     }
 }

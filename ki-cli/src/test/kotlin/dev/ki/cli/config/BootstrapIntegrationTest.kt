@@ -28,7 +28,7 @@ class BootstrapIntegrationTest {
         assertTrue(manifestPath.exists(), "expected repo-root ki.toml at $manifestPath")
 
         val session = Bootstrap.build(CliArgs(configPath = manifestPath), "You are terse.")
-        session.store.use {
+        session.store.let {
             val agent = KiAgent(session.llm, session.systemPrompt, session.tools)
             val reply = runBlocking { agent.run("Reply with exactly one word: hi") }
             assertTrue(
@@ -47,7 +47,7 @@ class BootstrapIntegrationTest {
         assertTrue(manifestPath.exists(), "expected repo-root ki.toml at $manifestPath")
 
         val session = Bootstrap.build(CliArgs(configPath = manifestPath), "You are terse.")
-        session.store.use {
+        session.store.let {
             val agent = KiAgent(session.llm, session.systemPrompt, session.tools)
             // Sends every configured tool's schema to the proxy and forces at least one
             // call (bash) — the shape that tripped the 500 from deepseek-v4-flash.

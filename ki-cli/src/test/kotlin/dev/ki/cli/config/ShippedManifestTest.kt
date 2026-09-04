@@ -20,7 +20,7 @@ class ShippedManifestTest {
         if (!repoManifest.exists()) return // not running from a checkout; skip
 
         val session = Bootstrap.build(CliArgs(configPath = repoManifest), "SYS")
-        session.store.use {
+        session.store.let {
             // 5 builtins + grep script tool.
             assertEquals(6, session.tools.size)
             assertTrue(session.sessionId.isNotBlank())

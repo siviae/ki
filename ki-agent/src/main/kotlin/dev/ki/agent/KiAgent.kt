@@ -42,8 +42,21 @@ enum class ToolPhase { STARTING, OK, ERROR }
  * the UI can update the same transcript line as the call moves STARTING → OK / ERROR — the
  * pi-style pending → success/error background stripe. [result] is the tool's own output
  * (OK) or failure message (ERROR); always null on STARTING.
+ *
+ * [fullArgs] (raw JSON text of the call arguments) and [fullResult] (the untruncated
+ * koog result element) exist for the ki-rpc layer (M1.4): pi's tool_execution events
+ * carry the complete args object and result value, while [args]/[result] stay previews
+ * so the TUI keeps its one-line rendering. The UI ignores these fields.
  */
-data class ToolCallEvent(val id: String, val name: String, val args: String, val phase: ToolPhase, val result: String? = null)
+data class ToolCallEvent(
+    val id: String,
+    val name: String,
+    val args: String,
+    val phase: ToolPhase,
+    val result: String? = null,
+    val fullArgs: String? = null,
+    val fullResult: ai.koog.serialization.JSONElement? = null,
+)
 
 /**
  * The agent runtime, built on koog's [AIAgent]. Holds the system prompt, model,
@@ -99,6 +112,18 @@ class KiAgent(
     /** Per-run sink for tool-call lifecycle events (M9.2); set for the duration of [run]. */
     @Volatile
     private var toolSink: ((ToolCallEvent) -> Unit)? = null
+
+    /**
+     * Steer texts queued while a turn is mid-run (pi parity, v2). Drained at the
+     * post-tool safe point of [streamingStrategy] — appended as user messages BEFORE
+     * the next LLM call, so the running turn redirects instead of the steer becoming
+     * a separate turn after agent_end.
+     */
+    private val pendingSteers = java.util.concurrent.ConcurrentLinkedQueue<String>()
+
+    /** True between run() entry and exit — [steer] queues only mid-run. */
+    @Volatile
+    private var turnActive = false
     private val tokenizer = KiTokenizer()
     private val window: Long = llm.defaultModel.contextWindow
     private val budgetTokens: Long = maxOf(MIN_BUDGET, (window * contextBudgetRatio).toLong())
@@ -129,7 +154,7 @@ class KiAgent(
 
     // Regex estimate undercounts real BPE, so bias the trigger up by SAFETY.
     private fun tooBig(prompt: Prompt): Boolean =
-        compressHistory && tokenizer.estimate(prompt) * SAFETY > budgetTokens
+        compressHistory && (forceCompression || tokenizer.estimate(prompt) * SAFETY > budgetTokens)
 
     private fun updateUsage(prompt: Prompt, response: Message.Assistant?) {
         val meta = response?.metaInfo
@@ -137,6 +162,15 @@ class KiAgent(
         lastUsage = if (reported != null) ContextUsage(reported, window, reported = true)
         else ContextUsage(tokenizer.estimate(prompt), window, reported = false)
         usageMeter?.record(meta?.inputTokensCount, meta?.outputTokensCount)
+    }
+
+    /** Set by the ki-rpc `compact` request (pi parity): the next turn compresses first. */
+    @Volatile
+    private var forceCompression = false
+
+    /** Force history compression on the next turn (ki-rpc `compact` request, M1.6 parity). */
+    fun compactNow() {
+        forceCompression = true
     }
 
     private val compressionConfig = HistoryCompressionConfig(
@@ -175,6 +209,7 @@ class KiAgent(
             val nodeSendToolResult by node<ReceivedToolResults, Message.Assistant>("streamSendToolResult") { results ->
                 llm.writeSession {
                     appendPrompt { user { results.toolResults.forEach { r -> toolResult(r.toMessagePart()) } } }
+                    drainSteers()
                     streamFold()
                 }
             }
@@ -183,7 +218,10 @@ class KiAgent(
                 retrievalModel = compressionConfig.retrievalModel,
             )
             val nodeSendCompressedHistory by node<ReceivedToolResults, Message.Assistant> {
-                llm.writeSession { requestLLM() }
+                llm.writeSession {
+                    drainSteers()
+                    requestLLM()
+                }
             }
 
             edge(nodeStart forwardTo nodeCallLLM)
@@ -194,10 +232,15 @@ class KiAgent(
             edge(nodeExecuteTool forwardTo nodeSendToolResult onCondition { llm.readSession { !compressionConfig.isHistoryTooBig(prompt) } })
             edge(nodeCompressHistory forwardTo nodeSendCompressedHistory)
 
-            edge(nodeSendToolResult forwardTo nodeFinish onTextMessage { true })
+            // Tool-first on the post-tool nodes: koog resolves edges FIRST-MATCH-WINS in
+            // declaration order, and a model that mixes narration text with a tool call in
+            // one message matches BOTH onTextMessage and onToolCalls. Finish-first silently
+            // ended the run without executing the call (bot session nNWb3vJMKrv2THW3E,
+            // reproduced live: mixed reply after a tool result never ran the tool).
             edge(nodeSendToolResult forwardTo nodeExecuteTool onToolCalls { true })
-            edge(nodeSendCompressedHistory forwardTo nodeFinish onTextMessage { true })
+            edge(nodeSendToolResult forwardTo nodeFinish onTextMessage { true })
             edge(nodeSendCompressedHistory forwardTo nodeExecuteTool onToolCalls { true })
+            edge(nodeSendCompressedHistory forwardTo nodeFinish onTextMessage { true })
         }
 
     private val agent: AIAgent<String, String> = AIAgent(
@@ -220,15 +263,15 @@ class KiAgent(
                 onLLMCallCompleted { ctx -> updateUsage(ctx.prompt, ctx.response) }
                 onToolCallStarting { ctx ->
                     currentTool = ctx.toolName
-                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.STARTING))
+                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.STARTING, fullArgs = ctx.toolArgs.toString()))
                 }
                 onToolCallCompleted { ctx ->
                     currentTool = null
-                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.OK, resultPreview(ctx.toolResult)))
+                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.OK, resultPreview(ctx.toolResult), fullArgs = ctx.toolArgs.toString(), fullResult = ctx.toolResult))
                 }
                 onToolCallFailed { ctx ->
                     currentTool = null
-                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.ERROR, ctx.message.takeIf { it.isNotBlank() }))
+                    toolSink?.invoke(ToolCallEvent(ctx.toolCallId.orEmpty(), ctx.toolName, argsPreview(ctx.toolArgs.toString()), ToolPhase.ERROR, ctx.message.takeIf { it.isNotBlank() }, fullArgs = ctx.toolArgs.toString()))
                 }
             }
         },
@@ -247,11 +290,36 @@ class KiAgent(
     ): String {
         reasoningSink = onReasoning
         toolSink = onTool
+        turnActive = true
         return try {
             agent.run(input, sessionId)
         } finally {
             reasoningSink = null
             toolSink = null
+            forceCompression = false
+            turnActive = false
+            pendingSteers.clear()
+        }
+    }
+
+    /**
+     * Queue a mid-run steer. Returns true when the text was queued for injection at
+     * the next safe point of the ACTIVE run (streaming mode, turn in progress);
+     * false when there is nothing to inject into — the caller falls back to treating
+     * the text as a regular next-turn message.
+     */
+    fun steer(text: String): Boolean {
+        if (!streaming || !turnActive) return false
+        if (text.isBlank()) return false
+        pendingSteers.add(text)
+        return true
+    }
+
+    /** Drain queued steers into the session as user messages (call inside writeSession). */
+    private fun ai.koog.agents.core.agent.session.AIAgentLLMWriteSession.drainSteers() {
+        while (true) {
+            val text = pendingSteers.poll() ?: break
+            appendPrompt { user(text) }
         }
     }
 

@@ -27,7 +27,7 @@ class ManifestTest {
         model = "fast"
 
         [db]
-        path = "sess.db"
+        path = "sessions"
 
         [tools.bash]
 
@@ -46,7 +46,7 @@ class ManifestTest {
         assertEquals("http://proxy:4000", m.llm.baseUrl)
         assertEquals("MY_KEY", m.llm.apiKeyEnv)
         assertEquals("fast", m.llm.model)
-        assertEquals("sess.db", m.db.path)
+        assertEquals("sessions", m.db.path)
         assertEquals("gpt-4o-mini", m.models["fast"]?.id)
         assertEquals(64000, m.models["fast"]?.contextWindow)
     }

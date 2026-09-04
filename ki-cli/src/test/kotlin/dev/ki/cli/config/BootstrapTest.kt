@@ -1,7 +1,10 @@
 package dev.ki.cli.config
 
 import ai.koog.agents.core.tools.Tool
+import ai.koog.prompt.message.Message
+import ai.koog.prompt.message.MessagePart
 import dev.ki.agent.config.ManifestException
+import dev.ki.store.MessageCodec
 import dev.ki.agent.hooks.ToolBlockedException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
@@ -29,13 +32,13 @@ class BootstrapTest {
             api_key_env = "LITELLM_API_KEY"
             model = "gpt-4o"
             [db]
-            path = "ki.db"
+            path = "sessions"
             [tools.bash]
             [tools.read]
             """.trimIndent()
         )
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        session.store.use {
+        session.store.let {
             assertEquals(2, session.tools.size)
         }
     }
@@ -43,7 +46,7 @@ class BootstrapTest {
     @Test fun `an unlisted builtin is simply absent`() {
         val cfg = writeManifest("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[tools.bash]\n")
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        session.store.use { assertEquals(1, session.tools.size) }
+        session.store.let { assertEquals(1, session.tools.size) }
     }
 
     @Test fun `unknown non-builtin tool without a script errors`() {
@@ -58,7 +61,7 @@ class BootstrapTest {
         val cfg = dir.resolve("ki.toml")
         cfg.writeText("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[context]\nfiles = [\"KI.md\"]\n[tools.bash]\n")
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        session.store.use {
+        session.store.let {
             assertTrue(session.systemPrompt.startsWith("SYS"))
             assertTrue(session.systemPrompt.contains("Project rule: be terse."))
         }
@@ -72,7 +75,7 @@ class BootstrapTest {
             api_key_env = "LITELLM_API_KEY"
             model = "small"
             [db]
-            path = "ki.db"
+            path = "sessions"
             [tools.bash]
             [models.small]
             id = "gpt-4o-mini"
@@ -80,7 +83,7 @@ class BootstrapTest {
             """.trimIndent()
         )
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        session.store.use {
+        session.store.let {
             assertEquals("gpt-4o-mini", session.llm.defaultModel.id)
             assertEquals(8000, session.llm.defaultModel.contextWindow)
         }
@@ -93,7 +96,7 @@ class BootstrapTest {
         // A sibling adds another tool; no --config for it, discovery must pick it up.
         dir.resolve("ki.extra.toml").writeText("[tools.read]\n")
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        session.store.use { assertEquals(2, session.tools.size) }
+        session.store.let { assertEquals(2, session.tools.size) }
     }
 
     @Test fun `a duplicate key across primary and sibling fails the build`() {
@@ -144,7 +147,7 @@ class BootstrapTest {
         )
 
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        session.store.use {
+        session.store.let {
             @Suppress("UNCHECKED_CAST")
             val bash = session.tools.first { it.descriptor.name == "bash" } as Tool<JsonObject, String>
             assertFailsWith<ToolBlockedException> {
@@ -154,15 +157,23 @@ class BootstrapTest {
     }
 
     @Test fun `--continue resumes the most recent session`() {
-        val cfg = writeManifest("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[db]\npath = \"ki.db\"\n[tools.bash]\n")
+        val cfg = writeManifest("[llm]\nbase_url = \"http://localhost:4000\"\napi_key_env = \"LITELLM_API_KEY\"\nmodel = \"gpt-4o\"\n[db]\npath = \"sessions\"\n[tools.bash]\n")
         // Seed two sessions directly in the store the bootstrap will open.
         val first = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
-        first.store.use { s ->
-            s.save("old", listOf(dev.ki.store.StoredMessage(0, "User", "{}")))
+        first.store.let { s ->
+            val msg = { id: String ->
+                dev.ki.store.StoredMessage(
+                    0, "User",
+                    MessageCodec.encode(
+                        Message.User(listOf(MessagePart.Text(id)), ai.koog.prompt.message.RequestMetaInfo(kotlin.time.Instant.fromEpochMilliseconds(0)))
+                    ),
+                )
+            }
+            s.save("old", listOf(msg("old")))
             Thread.sleep(5)
-            s.save("recent", listOf(dev.ki.store.StoredMessage(0, "User", "{}")))
+            s.save("recent", listOf(msg("recent")))
         }
         val resumed = Bootstrap.build(CliArgs(configPath = cfg, continueLatest = true), "SYS")
-        resumed.store.use { assertEquals("recent", resumed.sessionId) }
+        resumed.store.let { assertEquals("recent", resumed.sessionId) }
     }
 }

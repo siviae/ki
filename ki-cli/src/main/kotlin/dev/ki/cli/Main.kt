@@ -8,6 +8,7 @@ import dev.ki.tui.ProcessTerminal
 import dev.ki.tui.Tui
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.runBlocking
+import java.nio.file.Path
 import kotlin.system.exitProcess
 
 private val SYSTEM_PROMPT = """
@@ -18,6 +19,35 @@ private val SYSTEM_PROMPT = """
 
 fun main(argv: Array<String>) {
     val args = CliArgs.parse(argv)
+
+    // Machine-readable output — must stay clean of logging noise, so it runs before the
+    // first logger acquisition (the kotlin-logging init banner writes to stdout).
+    if (args.printResolved) {
+        println(Bootstrap.resolveForPrint(args).toPrettyString())
+        return
+    }
+
+    // RPC mode: pi-dialect JSONL on stdin/stdout (M1.4). The only stdout noise allowed
+    // is the kotlin-logging init banner, which we flush BEFORE the first JSON line by
+    // acquiring a logger up front; the bot's line reader skips non-JSON anyway.
+    if (args.mode == "rpc") {
+        Logging.configure(args, args.dbPath)
+        KotlinLogging.logger {}
+        val session = try {
+            Bootstrap.build(args, SYSTEM_PROMPT)
+        } catch (e: ManifestException) {
+            System.err.println("ki: ${e.message}")
+            exitProcess(2)
+        }
+        val root = args.configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath()
+        try {
+            dev.ki.cli.rpc.serveRpc(KiController(session), root.resolve(".pi/extensions/tool-meta"))
+        } finally {
+            (session.store as? java.io.Closeable)?.close()
+        }
+        return
+    }
+
     // Must precede the first logger acquisition so logback resolves level + dir from
     // these properties on init. Acquiring the logger below (not at top level) is what
     // guarantees that ordering — a file-level `val logger` would initialize logback in
@@ -35,7 +65,8 @@ fun main(argv: Array<String>) {
 
     val controller = KiController(session)
 
-    session.store.use {
+    // The store may or may not be Closeable (embedded hosts: maybe; pi-jsonl: no-op).
+    try {
         // One-shot mode: run a single prompt, print the reply, exit.
         session.oneShotPrompt?.let { prompt ->
             // Stream reasoning + tool calls to stderr so stdout stays the clean answer (M9.1/M9.2).
@@ -53,5 +84,7 @@ fun main(argv: Array<String>) {
         KiScreen(tui, controller)
         tui.start()
         tui.awaitStop()
+    } finally {
+        (session.store as? java.io.Closeable)?.close()
     }
 }

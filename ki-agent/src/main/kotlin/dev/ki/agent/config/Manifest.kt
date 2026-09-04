@@ -13,7 +13,10 @@ package dev.ki.agent.config
 data class Manifest(
     val llm: LlmSection,
     val db: DbSection = DbSection(),
+    val jvm: JvmSection = JvmSection(),
     val context: ContextSection = ContextSection(),
+    /** Hat-only: `[agent].systemPrompt` — the hat's base system prompt (before context files). */
+    val agent: AgentSection = AgentSection(),
     /** Tool name → entry. Builtins (see `BuiltinTools.NAMES`) need no `script`. */
     val tools: Map<String, ToolEntry> = emptyMap(),
     /**
@@ -31,16 +34,36 @@ data class LlmSection(
     /** Name of the env var holding the API key (secret by reference, never inline). */
     val apiKeyEnv: String,
     val model: String,
+    /** Sampling temperature override (0.0–2.0); null = provider default. */
+    val temperature: Double? = null,
 )
 
 /**
- * [checkpoints] opts into agent-persistence: koog snapshots graph state after each node so a
- * process killed mid-turn resumes from the last node (not just the last completed turn). Off
- * by default — extra write per node; enable for crash-prone runs.
+ * `[jvm]` — runtime knobs for the CLI process itself. [classpath] entries are
+ * jars or directories (a trailing slash-star globs every jar in the directory)
+ * appended to the script classpath: standalone ki-cli needs the host project's
+ * tool libs (shifts-db, xlsx, memory, …) for its `.ki.kts` scripts; embedded
+ * hosts already have them.
  */
-data class DbSection(val path: String = "./.ki/ki.db", val checkpoints: Boolean = false)
+data class JvmSection(val classpath: List<String> = emptyList())
+
+/**
+ * The CLI ships a single store: pi-format JSONL files under
+ * `~/.pi/agent/sessions/<--cwd-slug-->/` — cross-resumable with pi. [path] overrides
+ * that session directory (test/CI hook, resolved against the manifest root).
+ */
+data class DbSection(
+    val path: String? = null,
+)
 
 data class ContextSection(val files: List<String> = emptyList())
+
+/** `[agent]` — only used by hat manifests; a plain project manifest omits it. */
+data class AgentSection(
+    val systemPrompt: String? = null,
+    /** M6 compression keeps this many most-recent messages (embedded hosts shrink it). */
+    val keepLastMessages: Int? = null,
+)
 
 data class ModelEntry(
     val id: String,

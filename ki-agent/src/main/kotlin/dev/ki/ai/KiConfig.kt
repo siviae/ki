@@ -11,4 +11,6 @@ data class KiConfig(
     /** Model context window (tokens) — drives M6 context-budget/compression. */
     val contextWindow: Long = 128_000,
     val maxOutputTokens: Long = 8_192,
+    /** Sampling temperature override; null = provider default. */
+    val temperature: Double? = null,
 )
