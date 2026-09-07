@@ -16,7 +16,6 @@ import ai.koog.agents.core.dsl.extension.onToolCalls
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.ext.agent.HistoryCompressionConfig
-import ai.koog.agents.ext.agent.singleRunStrategyWithHistoryCompression
 import ai.koog.agents.features.eventHandler.feature.EventHandler
 import ai.koog.agents.snapshot.feature.Persistence
 import ai.koog.agents.snapshot.providers.PersistenceStorageProvider
@@ -200,6 +199,54 @@ class KiAgent(
      * but streams the two primary LLM calls (initial + post-tool) through [streamFold], so
      * reasoning deltas reach the UI live. The compression branch stays on the blocking path.
      */
+    /**
+     * Non-streaming twin of [streamingStrategy], same tool-first edge order. The stock
+     * koog [singleRunStrategyWithHistoryCompression] puts `onTextMessage` BEFORE
+     * `onToolCalls` on the first LLM node — first-match-wins silently finishes the run
+     * when the model mixes narration text with a tool call in one message ("I'll fetch
+     * the log" + the call), dropping the call. Same bug koog has on post-tool nodes
+     * (fixed here long ago, bot session nNWb3vJMKrv2THW3E).
+     */
+    private fun nonStreamingStrategy(): AIAgentGraphStrategy<String, String> =
+        strategy<String, String>("single_run_with_history_compression") {
+            val nodeCallLLM by node<String, Message.Assistant>("callLLM") { input ->
+                llm.writeSession { appendPrompt { user(input) }; requestLLM() }
+            }
+            val nodeExecuteTool by nodeExecuteTools(parallel = false)
+            val nodeSendToolResult by node<ReceivedToolResults, Message.Assistant>("sendToolResult") { results ->
+                llm.writeSession {
+                    appendPrompt { user { results.toolResults.forEach { r -> toolResult(r.toMessagePart()) } } }
+                    drainSteers()
+                    requestLLM()
+                }
+            }
+            val nodeCompressHistory by nodeLLMCompressHistory<ReceivedToolResults>(
+                strategy = compressionConfig.compressionStrategy,
+                retrievalModel = compressionConfig.retrievalModel,
+            )
+            val nodeSendCompressedHistory by node<ReceivedToolResults, Message.Assistant> {
+                llm.writeSession {
+                    drainSteers()
+                    requestLLM()
+                }
+            }
+
+            edge(nodeStart forwardTo nodeCallLLM)
+            // Tool-first on EVERY node: koog resolves edges first-match-wins in declaration
+            // order, and a mixed text+tool message matches BOTH predicates.
+            edge(nodeCallLLM forwardTo nodeExecuteTool onToolCalls { true })
+            edge(nodeCallLLM forwardTo nodeFinish onTextMessage { true })
+
+            edge(nodeExecuteTool forwardTo nodeCompressHistory onCondition { llm.readSession { compressionConfig.isHistoryTooBig(prompt) } })
+            edge(nodeExecuteTool forwardTo nodeSendToolResult onCondition { llm.readSession { !compressionConfig.isHistoryTooBig(prompt) } })
+            edge(nodeCompressHistory forwardTo nodeSendCompressedHistory)
+
+            edge(nodeSendToolResult forwardTo nodeExecuteTool onToolCalls { true })
+            edge(nodeSendToolResult forwardTo nodeFinish onTextMessage { true })
+            edge(nodeSendCompressedHistory forwardTo nodeExecuteTool onToolCalls { true })
+            edge(nodeSendCompressedHistory forwardTo nodeFinish onTextMessage { true })
+        }
+
     private fun streamingStrategy(): AIAgentGraphStrategy<String, String> =
         strategy<String, String>("single_run_streaming_with_history_compression") {
             val nodeCallLLM by node<String, Message.Assistant>("streamCallLLM") { input ->
@@ -246,8 +293,7 @@ class KiAgent(
     private val agent: AIAgent<String, String> = AIAgent(
         promptExecutor = llm.executor,
         agentConfig = config,
-        strategy = if (streaming) streamingStrategy()
-        else singleRunStrategyWithHistoryCompression(compressionConfig),
+        strategy = if (streaming) streamingStrategy() else nonStreamingStrategy(),
         toolRegistry = registry,
         installFeatures = {
             historyProvider?.let { provider ->
