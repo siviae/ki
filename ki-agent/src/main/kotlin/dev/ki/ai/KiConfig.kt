@@ -16,4 +16,6 @@ data class KiConfig(
     /** Reasoning effort sent as the raw `reasoning_effort` request field; null = not sent.
      *  A free-form string (not koog's enum) so proxies accepting "xhigh" work. */
     val reasoningEffort: String? = null,
+    /** Whether the default model accepts image parts (koog Vision capability). */
+    val vision: Boolean = true,
 )

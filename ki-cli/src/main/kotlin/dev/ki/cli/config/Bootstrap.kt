@@ -57,7 +57,12 @@ class KiSession(
  * only listed tools are built; an unlisted tool is simply unavailable.
  */
 object Bootstrap {
-    fun build(args: CliArgs, baseSystemPrompt: String): KiSession {
+    fun build(
+        args: CliArgs,
+        baseSystemPrompt: String,
+        fetchProxyModels: ((baseUrl: String, apiKey: String?, modelId: String) -> ProxyModels.Info?)? =
+            { b, k, m -> ProxyModels().lookup(b, k, m) },
+    ): KiSession {
         val root: Path = (args.configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath()).normalize()
         val hat = args.hat?.let { HatPaths.resolve(root, it) }
         val loaded = if (hat != null)
@@ -75,7 +80,7 @@ object Bootstrap {
 
         val effective = effectiveManifest(manifest, loaded)
 
-        val config = resolveConfig(args, manifest)
+        val config = resolveConfig(args, manifest, fetchProxyModels = fetchProxyModels)
         val llm = KiLlm(config)
 
         // Extensions contribute both tools and hooks; the chain wraps every tool it targets
@@ -171,17 +176,31 @@ object Bootstrap {
         System.err.println("ki: script classpath extended with ${urls.size} entr${if (urls.size == 1) "y" else "ies"} ([jvm].classpath)")
     }
 
-    private fun resolveConfig(args: CliArgs, manifest: Manifest, env: (String) -> String? = System::getenv): KiConfig =
+    private fun resolveConfig(
+        args: CliArgs,
+        manifest: Manifest,
+        env: (String) -> String? = System::getenv,
+        fetchProxyModels: ((baseUrl: String, apiKey: String?, modelId: String) -> ProxyModels.Info?)? = { b, k, m ->
+            ProxyModels().lookup(b, k, m)
+        },
+    ): KiConfig =
         resolveConfigParts(args, manifest, env).let { r ->
             val defaults = KiConfig(r.baseUrl, r.apiKey, r.modelId)
+            // Token limits not set in ki.toml come from the proxy's /v1/models — fetched
+            // only when a value is actually missing (config > proxy > default), and never
+            // in tests (fetchProxyModels = null).
+            val proxy = if (fetchProxyModels != null &&
+                (r.entry?.contextWindow == null || r.entry?.maxOutputTokens == null)
+            ) fetchProxyModels(r.baseUrl, r.apiKey, r.modelId) else null
             KiConfig(
                 baseUrl = r.baseUrl,
                 apiKey = r.apiKey,
                 defaultModelId = r.modelId,
-                contextWindow = r.entry?.contextWindow ?: defaults.contextWindow,
-                maxOutputTokens = r.entry?.maxOutputTokens ?: defaults.maxOutputTokens,
+                contextWindow = r.entry?.contextWindow ?: proxy?.maxInputTokens ?: defaults.contextWindow,
+                maxOutputTokens = r.entry?.maxOutputTokens ?: proxy?.maxOutputTokens ?: defaults.maxOutputTokens,
                 temperature = manifest.llm.temperature,
                 reasoningEffort = manifest.llm.reasoningEffort,
+                vision = r.entry?.vision ?: true,
             )
         }
 

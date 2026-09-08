@@ -70,8 +70,11 @@ data class AgentSection(
 data class ModelEntry(
     val id: String,
     val displayName: String? = null,
-    val contextWindow: Long = 128_000,
-    val maxOutputTokens: Long = 8_192,
+    /** null = not set in ki.toml — pull from the proxy's `/v1/models` (else the KiModel default). */
+    val contextWindow: Long? = null,
+    val maxOutputTokens: Long? = null,
+    /** Whether the model accepts image parts (koog Vision capability). */
+    val vision: Boolean = true,
 )
 
 /**

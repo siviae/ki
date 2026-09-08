@@ -38,6 +38,7 @@ class KiLlm private constructor(
             id = config.defaultModelId,
             contextWindow = config.contextWindow,
             maxOutputTokens = config.maxOutputTokens,
+            vision = config.vision,
         ),
     )
 

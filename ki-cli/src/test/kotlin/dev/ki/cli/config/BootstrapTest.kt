@@ -17,6 +17,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.test.assertFalse
 
 class BootstrapTest {
     private fun writeManifest(toml: String): Path {
@@ -80,6 +81,7 @@ class BootstrapTest {
             [models.small]
             id = "gpt-4o-mini"
             context_window = 8000
+            max_output_tokens = 4096
             """.trimIndent()
         )
         val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS")
@@ -175,5 +177,63 @@ class BootstrapTest {
         }
         val resumed = Bootstrap.build(CliArgs(configPath = cfg, continueLatest = true), "SYS")
         resumed.store.let { assertEquals("recent", resumed.sessionId) }
+    }
+
+    @Test fun `token limits not set in config are pulled from the proxy, config wins`() {
+        val dir = Files.createTempDirectory("ki-boot")
+        val cfg = dir.resolve("ki.toml")
+        cfg.writeText(
+            """
+            [llm]
+            base_url = "http://localhost:4000/v1"
+            api_key_env = "LITELLM_API_KEY"
+            model = "qwen3.8-27b"
+            [tools.bash]
+            [models."qwen3.8-27b"]
+            id = "qwen3.8-27b"
+            vision = false
+            """.trimIndent()
+        )
+        var fetched = false
+        val fake: (String, String?, String) -> ProxyModels.Info? = { url, key, model ->
+            fetched = true
+            assertEquals("http://localhost:4000/v1", url)
+            assertEquals("qwen3.8-27b", model)
+            ProxyModels.Info(maxInputTokens = 262_144, maxOutputTokens = 32_768)
+        }
+        val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS", fetchProxyModels = fake)
+        session.llm.defaultModel.let {
+            // proxy filled the unset limits
+            assertEquals(262_144, it.contextWindow)
+            assertEquals(32_768, it.maxOutputTokens)
+            // vision came from ki.toml (false → no Vision capability in koog terms)
+            assertFalse(it.vision)
+            assertFalse(it.toLLModel().capabilities!!.any { c -> c.toString().contains("Vision") })
+        }
+        assertTrue(fetched)
+    }
+
+    @Test fun `explicit config limits override the proxy and skip the fetch`() {
+        val dir = Files.createTempDirectory("ki-boot")
+        val cfg = dir.resolve("ki.toml")
+        cfg.writeText(
+            """
+            [llm]
+            base_url = "http://localhost:4000"
+            api_key_env = "LITELLM_API_KEY"
+            model = "small"
+            [tools.bash]
+            [models.small]
+            id = "gpt-4o-mini"
+            context_window = 8000
+            max_output_tokens = 4096
+            """.trimIndent()
+        )
+        val session = Bootstrap.build(CliArgs(configPath = cfg), "SYS", fetchProxyModels = { _, _, _ ->
+            throw IllegalStateException("proxy fetch must not run when limits are explicit")
+        })
+        assertEquals(8000, session.llm.defaultModel.contextWindow)
+        // vision defaults to true when not configured
+        assertTrue(session.llm.defaultModel.vision)
     }
 }
