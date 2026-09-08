@@ -36,6 +36,8 @@ data class LlmSection(
     val model: String,
     /** Sampling temperature override (0.0–2.0); null = provider default. */
     val temperature: Double? = null,
+    /** Reasoning effort for the request body (`reasoning_effort`); null = not sent. */
+    val reasoningEffort: String? = null,
 )
 
 /**

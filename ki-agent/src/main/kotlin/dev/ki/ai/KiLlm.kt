@@ -21,13 +21,16 @@ class KiLlm private constructor(
 ) {
     constructor(config: KiConfig) : this(
         executor = RetryingPromptExecutor(
-            temperatureOverride(
+            reasoningEffortOverride(
                 config,
-                MultiLLMPromptExecutor(
-                    DoubleEncodedArgsWorkaroundClient(
-                        apiKey = config.apiKey,
-                        settings = OpenAIClientSettings(baseUrl = normalizeBaseUrl(config.baseUrl)),
-                    )
+                temperatureOverride(
+                    config,
+                    MultiLLMPromptExecutor(
+                        DoubleEncodedArgsWorkaroundClient(
+                            apiKey = config.apiKey,
+                            settings = OpenAIClientSettings(baseUrl = normalizeBaseUrl(config.baseUrl)),
+                        )
+                    ),
                 ),
             ),
         ),
@@ -42,6 +45,10 @@ class KiLlm private constructor(
         /** Wrap with the temperature override when `[llm].temperature` is set (else no-op). */
         private fun temperatureOverride(config: KiConfig, executor: PromptExecutor): PromptExecutor =
             config.temperature?.let { TemperatureOverrideExecutor(executor, it) } ?: executor
+
+        /** Wrap with the reasoning-effort override when `[llm].reasoning_effort` is set (else no-op). */
+        private fun reasoningEffortOverride(config: KiConfig, executor: PromptExecutor): PromptExecutor =
+            config.reasoningEffort?.let { ReasoningEffortOverrideExecutor(executor, it) } ?: executor
 
         /** Build from an explicit executor + model (embedding / tests). */
         fun of(executor: PromptExecutor, model: KiModel): KiLlm = KiLlm(executor, model)

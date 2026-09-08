@@ -1,5 +1,6 @@
 package dev.ki.cli.rpc
 
+import dev.ki.agent.TurnImage
 import dev.ki.agent.ToolCallEvent
 import dev.ki.agent.ToolPhase
 import dev.ki.cli.store.KiJson
@@ -25,10 +26,18 @@ import kotlin.system.exitProcess
  * The agent surface the RPC server drives. Implemented by [dev.ki.cli.KiController];
  * faked in tests so the wire protocol is testable without an LLM.
  */
+/** One queued RPC turn: text + optional images (vision). */
+private data class TurnMessage(val text: String, val images: List<TurnImage> = emptyList())
+
 interface RpcAgent {
     /** Run one turn; callbacks mirror [dev.ki.agent.KiAgent.run]. Named runTurn because
      *  KiController.run already occupies this JVM signature. */
-    suspend fun runTurn(prompt: String, onReasoning: ((String) -> Unit)?, onTool: ((ToolCallEvent) -> Unit)?): String
+    suspend fun runTurn(
+        prompt: String,
+        onReasoning: ((String) -> Unit)?,
+        onTool: ((ToolCallEvent) -> Unit)?,
+        images: List<TurnImage> = emptyList(),
+    ): String
 
     /** Names of the active tools (manifest allowlist, declaration order). */
     val toolNames: List<String>
@@ -84,7 +93,7 @@ class RpcServer(
     private val metaDir: Path?,
     private val output: (String) -> Unit,
 ) {
-    private val messages = Channel<String>(Channel.UNLIMITED)
+    private val messages = Channel<TurnMessage>(Channel.UNLIMITED)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val lock = Any()
     private var loop: Job? = null
@@ -112,7 +121,7 @@ class RpcServer(
         when (request["type"]) {
             "prompt", "follow_up" -> {
                 respond(id, success = true)
-                submit(request["message"] as? String ?: "")
+                submit(request["message"] as? String ?: "", parseImages(request))
             }
             "steer" -> {
                 respond(id, success = true)
@@ -142,8 +151,18 @@ class RpcServer(
         }
     }
 
-    private fun submit(message: String) {
-        messages.trySend(message)
+    /** RPC `images` entries: [{mime, data(base64)}]; malformed entries are dropped. */
+    private fun parseImages(request: Map<String, Any?>): List<TurnImage> =
+        (request["images"] as? List<*>).orEmpty().mapNotNull { item ->
+            (item as? Map<*, *>)?.let { m ->
+                val data = m["data"] as? String ?: return@mapNotNull null
+                val mime = (m["mime"] as? String) ?: "image/png"
+                TurnImage(data, mime)
+            }
+        }
+
+    private fun submit(message: String, images: List<TurnImage> = emptyList()) {
+        messages.trySend(TurnMessage(message, images))
         ensureLoop()
     }
 
@@ -164,7 +183,7 @@ class RpcServer(
                 active = true
             }
             aborted = false
-            val turn = scope.launch { doTurn(message) }
+            val turn = scope.launch { doTurn(message.text, message.images) }
             currentTurn = turn
             turn.join()
             // Drained = nothing receivable: an open channel with an empty buffer, or a
@@ -194,13 +213,14 @@ class RpcServer(
         }
     }
 
-    private suspend fun doTurn(message: String) {
+    private suspend fun doTurn(message: String, images: List<TurnImage> = emptyList()) {
         emit(mapOf("type" to "turn_start"))
         // v1: no reasoning-delta streaming — nothing downstream consumes the deltas.
         val finalText = agent.runTurn(
             message,
             onReasoning = null,
             onTool = { event -> emitToolEvents(event) },
+            images = images,
         )
         val assistant = agent.piPathMessages().lastOrNull { it["role"] == "assistant" }
         // message_end carries the stored assistant entry: telemetry reads usage/model/

@@ -181,6 +181,7 @@ object Bootstrap {
                 contextWindow = r.entry?.contextWindow ?: defaults.contextWindow,
                 maxOutputTokens = r.entry?.maxOutputTokens ?: defaults.maxOutputTokens,
                 temperature = manifest.llm.temperature,
+                reasoningEffort = manifest.llm.reasoningEffort,
             )
         }
 

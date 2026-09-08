@@ -1,6 +1,7 @@
 package dev.ki.cli
 
 import dev.ki.agent.KiAgent
+import dev.ki.agent.TurnImage
 import dev.ki.agent.ToolCallEvent
 import dev.ki.agent.context.ContextUsage
 import dev.ki.ai.KiLlm
@@ -51,8 +52,12 @@ class KiController(private val session: KiSession) : SlashContext, dev.ki.cli.rp
      * model's streamed reasoning/thinking deltas (M9.1); [onTool] receives tool-call
      * lifecycle events for the transcript's colored tool line (M9.2).
      */
-    suspend fun run(input: String, onReasoning: (String) -> Unit, onTool: (ToolCallEvent) -> Unit): String =
-        agent.run(input, activeSessionId, onReasoning, onTool)
+    suspend fun run(
+        input: String,
+        onReasoning: (String) -> Unit,
+        onTool: (ToolCallEvent) -> Unit,
+        images: List<TurnImage> = emptyList(),
+    ): String = agent.run(input, activeSessionId, onReasoning, onTool, images)
 
     /**
      * Live resume. With no [id], list resumable sessions; with an [id], switch the active
@@ -80,7 +85,8 @@ class KiController(private val session: KiSession) : SlashContext, dev.ki.cli.rp
         prompt: String,
         onReasoning: ((String) -> Unit)?,
         onTool: ((dev.ki.agent.ToolCallEvent) -> Unit)?,
-    ): String = run(prompt, onReasoning ?: {}, onTool ?: {})
+        images: List<dev.ki.agent.TurnImage>,
+    ): String = run(prompt, onReasoning ?: {}, onTool ?: {}, images)
 
     override val toolNames: List<String> = session.tools.map { it.descriptor?.name ?: it.name }
     override fun toolDescription(name: String): String =

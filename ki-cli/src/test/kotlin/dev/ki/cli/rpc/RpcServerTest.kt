@@ -1,5 +1,6 @@
 package dev.ki.cli.rpc
 
+import dev.ki.agent.TurnImage
 import dev.ki.agent.ToolCallEvent
 import dev.ki.agent.ToolPhase
 import java.io.BufferedReader
@@ -24,6 +25,7 @@ class RpcServerTest {
         private val failFirst: Boolean = false,
     ) : RpcAgent {
         val prompts = ArrayList<String>()
+        val images = ArrayList<List<TurnImage>>()
         val steers = ArrayList<String>()
         val pathMessages = ArrayList<Map<String, Any?>>()
         var runFailure: Throwable? = null
@@ -33,8 +35,10 @@ class RpcServerTest {
             prompt: String,
             onReasoning: ((String) -> Unit)?,
             onTool: ((ToolCallEvent) -> Unit)?,
+            images: List<TurnImage>,
         ): String {
             prompts.add(prompt)
+            this@FakeAgent.images.add(images)
             afterRun?.invoke()
             runFailure?.let { throw it }
             onTool?.invoke(
@@ -118,6 +122,23 @@ class RpcServerTest {
             types,
         )
         assertEquals(listOf("hello"), agent.prompts)
+    }
+
+    @Test
+    fun `prompt with images passes them to the agent`() {
+        val agent = FakeAgent()
+        val lines = serve(
+            agent,
+            lines = listOf(
+                """{"type":"prompt","id":"req_2","message":"что на изображении?","images":[{"mime":"image/png","data":"QUJD"},{"data":"WFla"}]}""",
+            ),
+        )
+        assertEquals("response", lines[0]["type"])
+        assertEquals(listOf("что на изображении?"), agent.prompts)
+        assertEquals(2, agent.images.single().size)
+        assertEquals("image/png", agent.images.single()[0].mime)
+        assertEquals("QUJD", agent.images.single()[0].base64)
+        assertEquals("image/png", agent.images.single()[1].mime) // дефолт при отсутствии mime
     }
 
     @Test

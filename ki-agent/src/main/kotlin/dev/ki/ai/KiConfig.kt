@@ -13,4 +13,7 @@ data class KiConfig(
     val maxOutputTokens: Long = 8_192,
     /** Sampling temperature override; null = provider default. */
     val temperature: Double? = null,
+    /** Reasoning effort sent as the raw `reasoning_effort` request field; null = not sent.
+     *  A free-form string (not koog's enum) so proxies accepting "xhigh" work. */
+    val reasoningEffort: String? = null,
 )

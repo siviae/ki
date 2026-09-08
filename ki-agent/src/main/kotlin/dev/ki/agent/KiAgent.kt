@@ -20,8 +20,12 @@ import ai.koog.agents.features.eventHandler.feature.EventHandler
 import ai.koog.agents.snapshot.feature.Persistence
 import ai.koog.agents.snapshot.providers.PersistenceStorageProvider
 import ai.koog.prompt.Prompt
+import ai.koog.prompt.dsl.PromptBuilder
 import ai.koog.prompt.dsl.prompt
+import ai.koog.prompt.message.AttachmentContent
+import ai.koog.prompt.message.AttachmentSource
 import ai.koog.prompt.message.Message
+import ai.koog.prompt.message.MessagePart
 import ai.koog.prompt.streaming.StreamFrame
 import ai.koog.prompt.streaming.toMessageResponse
 import ai.koog.serialization.JSONElement
@@ -91,6 +95,9 @@ data class ToolCallEvent(
  * folded response inside the node (the streaming path does not fire `onLLMCallCompleted`).
  * Default off, so `ki-spring` and tests keep the proven blocking path.
  */
+/** One image attached to the next user turn (daemon sends base64 over RPC). */
+data class TurnImage(val base64: String, val mime: String)
+
 class KiAgent(
     private val llm: KiLlm,
     systemPrompt: String,
@@ -123,6 +130,10 @@ class KiAgent(
     /** True between run() entry and exit — [steer] queues only mid-run. */
     @Volatile
     private var turnActive = false
+
+    /** Images queued for the NEXT user message (prompt with pictures). Drained by the
+     *  first [userWithImages] append of the turn; text-only turns never touch them. */
+    private val pendingImages = ArrayDeque<TurnImage>()
     private val tokenizer = KiTokenizer()
     private val window: Long = llm.defaultModel.contextWindow
     private val budgetTokens: Long = maxOf(MIN_BUDGET, (window * contextBudgetRatio).toLong())
@@ -207,10 +218,40 @@ class KiAgent(
      * the log" + the call), dropping the call. Same bug koog has on post-tool nodes
      * (fixed here long ago, bot session nNWb3vJMKrv2THW3E).
      */
+    /**
+     * Append the user turn: text only, or text + queued images as attachment parts
+     * (vision models; koog flattens [MessagePart.Attachment] into the OpenAI image_url
+     * content blocks). Drains [pendingImages] — queued images attach to exactly ONE
+     * user message, the turn's first.
+     */
+    private fun ai.koog.prompt.dsl.PromptBuilder.userWithImages(text: String) {
+        val images = pendingImages.toList()
+        pendingImages.clear()
+        if (images.isEmpty()) {
+            user(text)
+            return
+        }
+        val parts = buildList {
+            add(MessagePart.Text(text))
+            images.forEach { img ->
+                add(
+                    MessagePart.Attachment(
+                        AttachmentSource.Image(
+                            content = AttachmentContent.Binary.Base64(img.base64),
+                            format = img.mime.substringAfter('/'),
+                            mimeType = img.mime,
+                        ),
+                    ),
+                )
+            }
+        }
+        user(parts)
+    }
+
     private fun nonStreamingStrategy(): AIAgentGraphStrategy<String, String> =
         strategy<String, String>("single_run_with_history_compression") {
             val nodeCallLLM by node<String, Message.Assistant>("callLLM") { input ->
-                llm.writeSession { appendPrompt { user(input) }; requestLLM() }
+                llm.writeSession { appendPrompt { userWithImages(input) }; requestLLM() }
             }
             val nodeExecuteTool by nodeExecuteTools(parallel = false)
             val nodeSendToolResult by node<ReceivedToolResults, Message.Assistant>("sendToolResult") { results ->
@@ -250,7 +291,7 @@ class KiAgent(
     private fun streamingStrategy(): AIAgentGraphStrategy<String, String> =
         strategy<String, String>("single_run_streaming_with_history_compression") {
             val nodeCallLLM by node<String, Message.Assistant>("streamCallLLM") { input ->
-                llm.writeSession { appendPrompt { user(input) }; streamFold() }
+                llm.writeSession { appendPrompt { userWithImages(input) }; streamFold() }
             }
             val nodeExecuteTool by nodeExecuteTools(parallel = false)
             val nodeSendToolResult by node<ReceivedToolResults, Message.Assistant>("streamSendToolResult") { results ->
@@ -333,9 +374,11 @@ class KiAgent(
         sessionId: String? = null,
         onReasoning: ((String) -> Unit)? = null,
         onTool: ((ToolCallEvent) -> Unit)? = null,
+        images: List<TurnImage> = emptyList(),
     ): String {
         reasoningSink = onReasoning
         toolSink = onTool
+        pendingImages.addAll(images)
         turnActive = true
         return try {
             agent.run(input, sessionId)
